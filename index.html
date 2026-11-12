@@ -162,6 +162,11 @@
     <div class="muted">Höherer Wert = Verbindungen mit weniger Umstiegen werden bevorzugt, auch wenn sie etwas länger dauern.</div>
   </section>
   <section class="card">
+    <label class="setting">Dein Alter (für Ermäßigungen)
+      <input type="number" id="setAge" min="0" max="120" inputmode="numeric" placeholder="z. B. 64" style="width:100%;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text)"></label>
+    <div class="muted">Wird nur auf diesem Gerät gespeichert. VVO: ab 60 Jahren gibt es die Tageskarte für Einzelpersonen zum ermäßigten Preis.</div>
+  </section>
+  <section class="card">
     <label class="setting">Proxy-Adresse (nur nötig, falls eine API blockiert)
       <input type="text" id="setProxy" placeholder="https://fahrplan-proxy.DEINNAME.workers.dev" autocapitalize="off" autocorrect="off"></label>
     <div class="muted">Datenquellen: VVO-WebAPI (Sachsen), v6.bvg.transport.rest (Berlin/Brandenburg).</div>
@@ -179,6 +184,7 @@ const settings = {
   region: store.get("region", "auto"),
   maxWalk: store.get("maxWalk", 1000),
   penalty: store.get("penalty", 5),
+  age: store.get("age", null),
   speed: store.get("speed", "normal"),
   proxy: store.get("proxy", "")
 };
@@ -492,6 +498,27 @@ const VVO = {
   }
 };
 
+// ---------------------------------------------------------------- Ermäßigungen (VVO)
+// Quelle: VVO, Ermäßigungen für Senioren – Tageskarte für Einzelpersonen ab 60 Jahren. Stand 1. April 2026.
+const VVO_SENIOR_DAY = { minAge: 60, stand: "1.4.2026", dresden: 7.90, oneZone: 6.80, twoZones: 10.80, network: 17.70 };
+const parseEuro = t => { const n = parseFloat(String(t || "").replace(/[^\d,.-]/g, "").replace(",", ".")); return isNaN(n) ? null : n; };
+
+/** Ermäßigte Tageskarte für Senioren, falls zutreffend: { price, label, breakEven } */
+function seniorDayTicket(j) {
+  const f = j.fare;
+  if (!f || settings.age == null || settings.age < VVO_SENIOR_DAY.minAge) return null;
+  if (!f.names || f.names.startsWith("Berlin")) return null;              // nur VVO
+  let price;
+  if (/verbund/i.test(f.zones || "") || (f.zoneCount != null && f.zoneCount >= 3)) price = VVO_SENIOR_DAY.network;
+  else if (f.zoneCount === 2) price = VVO_SENIOR_DAY.twoZones;
+  else if (f.zoneCount === 1) price = /dresden/i.test(f.names) ? VVO_SENIOR_DAY.dresden : VVO_SENIOR_DAY.oneZone;
+  else return null;
+  const single = parseEuro(j.price);
+  // ab wie vielen Einzelfahrten am Tag die Tageskarte günstiger ist
+  const breakEven = single ? Math.floor(price / single) + 1 : null;
+  return { price, label: euro(price), breakEven };
+}
+
 // ---------------------------------------------------------------- Bewertung
 const J = {
   transit: j => j.legs.filter(l => !l.walking),
@@ -709,7 +736,12 @@ function openDetail(i) {
   if (f.zones || f.names || j.price) {
     const r = (a, b) => b ? `<div class="row" style="justify-content:space-between;gap:16px"><span>${a}</span><b style="text-align:right">${esc(b)}</b></div>` : "";
     html += `<div class="sectiontitle">Fahrschein</div><section class="card">
-      ${r("Tarifzonen", f.zones)}${r("Zone(n)", f.names)}${r("Einzelfahrt", j.price)}${r("Tageskarte", f.dayPrice)}
+      ${r("Tarifzonen", f.zones)}${r("Zone(n)", f.names)}${r("Einzelfahrt", j.price)}${r("Tageskarte", f.dayPrice)}${(() => {
+        const sd = seniorDayTicket(j);
+        if (!sd) return "";
+        return `<div class="row" style="justify-content:space-between;gap:16px;color:var(--green)"><span>Tageskarte ermäßigt (ab 60)</span><b>${esc(sd.label)}</b></div>
+          ${sd.breakEven ? `<div class="muted">Günstiger als Einzelfahrten ab ${sd.breakEven} Fahrten am Tag. Preis laut VVO-Tarif, Stand ${VVO_SENIOR_DAY.stand}.</div>` : ""}`;
+      })()}
       ${(f.tickets || []).length > 1 ? `<div class="muted" style="margin-top:6px">${f.tickets.map(t => esc(t.name + (t.price ? " " + t.price : ""))).join(" · ")}</div>` : ""}
       <div class="muted" style="margin-top:6px">Angaben der Fahrplanauskunft, ohne Gewähr. Mit Deutschlandticket ist keine Fahrkarte nötig.</div>
     </section>`;
@@ -750,6 +782,7 @@ function openSettings() {
   $("#setPenalty").value = settings.penalty; $("#penaltyVal").textContent = settings.penalty;
   $("#setSpeed").value = settings.speed;
   $("#setProxy").value = settings.proxy;
+  $("#setAge").value = settings.age ?? "";
   $("#settings").classList.remove("hidden");
 }
 $("#btnSettings").addEventListener("click", openSettings);
@@ -762,6 +795,8 @@ $("#settingsDone").addEventListener("click", () => {
   settings.penalty = +$("#setPenalty").value;
   settings.speed = $("#setSpeed").value;
   settings.proxy = $("#setProxy").value.trim();
+  const age = parseInt($("#setAge").value, 10);
+  settings.age = isNaN(age) ? null : age;
   proxyHosts.clear();
   Object.entries(settings).forEach(([k, v]) => store.set(k, v));
   $("#settings").classList.add("hidden");
