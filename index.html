@@ -67,6 +67,15 @@
   .leg:last-child { border-bottom:0; }
   .leg .ic { width:28px; text-align:center; font-size:18px; }
   .t { font-variant-numeric:tabular-nums; font-weight:600; }
+  .leg.tap { cursor:pointer; }
+  .more { font-size:13px; color:var(--blue); margin-top:3px; }
+  .stops { list-style:none; margin:8px 0 2px; padding:0 0 0 2px; border-left:3px solid var(--lc, #999); }
+  .stops li { position:relative; padding:4px 0 4px 14px; font-size:14px; display:flex; gap:8px; align-items:baseline; }
+  .stops li::before { content:""; position:absolute; left:-7.5px; top:10px; width:9px; height:9px; border-radius:50%;
+    background:var(--card); border:2px solid var(--lc, #999); }
+  .stops li.end { font-weight:600; }
+  .stops li.end::before { background:var(--lc, #999); }
+  .stops li.cx { text-decoration:line-through; color:var(--muted); }
   .late { color:#d12; font-size:12px; margin-left:3px; }
   .early { color:#b35c00; font-size:12px; margin-left:3px; }
   .favs { display:flex; gap:8px; margin:6px 0 8px; }
@@ -286,7 +295,7 @@ const BVG = {
     const u = new URL(this.base + "/journeys");
     const p = {
       "from.latitude": from.lat.toFixed(6), "from.longitude": from.lon.toFixed(6), "from.address": "Mein Standort",
-      departure: dep.toISOString(), results: 6, stopovers: false, remarks: false, language: "de", walkingSpeed: settings.speed, tickets: true
+      departure: dep.toISOString(), results: 6, stopovers: true, remarks: false, language: "de", walkingSpeed: settings.speed, tickets: true
     };
     if (few) p.transfers = 1;
     if (to.kind === "stop") p.to = to.id;
@@ -312,7 +321,15 @@ const BVG = {
         origin: l.origin?.name || l.origin?.address || "Start", dest: l.destination?.name || l.destination?.address || "Ziel",
         dep, arr, depDelay: l.departureDelay != null ? Math.round(l.departureDelay / 60) : null,
         arrDelay: l.arrivalDelay != null ? Math.round(l.arrivalDelay / 60) : null,
-        platform: l.departurePlatform, dist: l.distance ?? null, oLat, oLon, dLat, dLon, cancelled: !!l.cancelled
+        platform: l.departurePlatform, dist: l.distance ?? null, oLat, oLon, dLat, dLon, cancelled: !!l.cancelled,
+        stops: (l.stopovers || []).map((so, k, all) => {
+          const last = k === all.length - 1;
+          const t = last ? (so.arrival || so.plannedArrival || so.departure || so.plannedDeparture)
+                         : (so.departure || so.plannedDeparture || so.arrival || so.plannedArrival);
+          const d = last ? (so.arrivalDelay ?? so.departureDelay) : (so.departureDelay ?? so.arrivalDelay);
+          return { name: so.stop?.name || "?", time: t ? new Date(t) : null, delay: d != null ? Math.round(d / 60) : null,
+                   platform: so.departurePlatform || so.arrivalPlatform || null, cancelled: !!so.cancelled };
+        })
       };
     }).filter(Boolean);
     if (!legs.length) return null;
@@ -435,7 +452,14 @@ const VVO = {
         walking, product: this.product(type), line: walking ? null : pr.Mot?.Name, dir: pr.Mot?.Direction,
         origin: f?.Name, dest: l?.Name, dep: rd || pd, arr: ra || pa,
         depDelay: pd && rd ? mins(pd, rd) : null, arrDelay: pa && ra ? mins(pa, ra) : null,
-        platform: f?.Platform?.Name, dur: pr.Duration || 0, dist: null
+        platform: f?.Platform?.Name, dur: pr.Duration || 0, dist: null,
+        stops: walking ? [] : stops.map((st, k) => {
+          const first = k === 0;
+          const plan = this.parseDate(first ? (st.DepartureTime || st.ArrivalTime) : (st.ArrivalTime || st.DepartureTime));
+          const real = this.parseDate(first ? (st.DepartureRealTime || st.ArrivalRealTime) : (st.ArrivalRealTime || st.DepartureRealTime));
+          return { name: st.Name || "?", time: real || plan, delay: plan && real ? mins(plan, real) : null,
+                   platform: st.Platform?.Name || null, cancelled: st.State === "Cancelled" };
+        })
       };
       if (num(f?.Latitude) > 1000) [x.oLat, x.oLon] = GK.toWGS(num(f.Longitude), num(f.Latitude));
       if (num(l?.Latitude) > 1000) [x.dLat, x.dLon] = GK.toWGS(num(l.Longitude), num(l.Latitude));
@@ -665,10 +689,15 @@ function openDetail(i) {
       html += `<div class="leg"><div class="ic">🚶</div><div><b>Fußweg ${m} min${l.dist ? " · " + l.dist + " m" : ""}</b><div class="muted">bis ${esc(l.dest)}</div></div></div>`;
     } else {
       const dl = (d) => d ? `<span class="${d > 0 ? "late" : "early"}">${d > 0 ? "+" : ""}${d}</span>` : "";
-      html += `<div class="leg"><div class="ic" style="color:${p.color}">${p.icon}</div><div>
+      const st = (l.stops || []).filter(x => x.time);
+      const between = Math.max(0, st.length - 2);
+      const stopList = st.length > 2 ? `<ul class="stops hidden" style="--lc:${p.color}">${st.map((x, k) =>
+          `<li class="${k === 0 || k === st.length - 1 ? "end" : ""}${x.cancelled ? " cx" : ""}"><span class="t">${hhmm(x.time)}</span>${dl(x.delay)}<span>${esc(x.name)}${x.platform ? ` <span class="muted">· ${esc(x.platform)}</span>` : ""}</span></li>`).join("")}</ul>` : "";
+      html += `<div class="leg${stopList ? " tap" : ""}"><div class="ic" style="color:${p.color}">${p.icon}</div><div style="flex:1">
         <div>${lineChip(l)} ${l.dir ? `<span class="muted">→ ${esc(l.dir)}</span>` : ""}</div>
         <div><span class="t">${hhmm(l.dep)}</span>${dl(l.depDelay)} ${esc(l.origin)}${l.platform ? ` <span class="muted">· Steig ${esc(l.platform)}</span>` : ""}</div>
-        <div><span class="t">${hhmm(l.arr)}</span>${dl(l.arrDelay)} ${esc(l.dest)}</div></div></div>`;
+        <div><span class="t">${hhmm(l.arr)}</span>${dl(l.arrDelay)} ${esc(l.dest)}</div>
+        ${stopList ? `<div class="more" data-n="${between}">▸ ${between} Zwischenhalt${between === 1 ? "" : "e"} anzeigen</div>${stopList}` : ""}</div></div>`;
     }
   }
   html += `</section><section class="card">
@@ -686,6 +715,12 @@ function openDetail(i) {
     </section>`;
   }
   $("#detailBody").innerHTML = html;
+  // Antippen einer Teilverbindung klappt die Zwischenhalte auf bzw. wieder zu
+  document.querySelectorAll("#detailBody .leg.tap").forEach(el => el.addEventListener("click", () => {
+    const list = el.querySelector(".stops"), more = el.querySelector(".more"), n = +more.dataset.n;
+    const open = list.classList.toggle("hidden") === false;
+    more.textContent = open ? "▾ Zwischenhalte ausblenden" : `▸ ${n} Zwischenhalt${n === 1 ? "" : "e"} anzeigen`;
+  }));
   $("#detail").classList.remove("hidden");
   $("#detail").scrollTop = 0;
 
