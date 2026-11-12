@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Fahrplan">
+<meta name="theme-color" content="#c8102e">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<title>Fahrplan</title>
+<style>
+  :root { --bg:#f2f2f7; --card:#fff; --text:#111; --muted:#6b6b70; --line:#e3e3e8; --accent:#c8102e; --blue:#0a66d8; --green:#1a8f3c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#000; --card:#1c1c1e; --text:#f2f2f7; --muted:#9a9aa0; --line:#2c2c2e; --blue:#4a9bff; --green:#3ccf6b; }
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; background:var(--bg); color:var(--text);
+    font:16px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  header { position:sticky; top:0; z-index:10; display:flex; align-items:center; gap:10px;
+    padding:calc(env(safe-area-inset-top) + 10px) 16px 10px; background:var(--bg); }
+  header h1 { font-size:28px; margin:0; flex:1; }
+  .chip { font-size:12px; padding:4px 9px; border-radius:99px; background:var(--card); color:var(--muted); border:1px solid var(--line); }
+  .iconbtn { border:0; background:none; font-size:24px; color:var(--blue); padding:4px; }
+  main { padding:0 12px calc(env(safe-area-inset-bottom) + 30px); max-width:640px; margin:0 auto; }
+  .card { background:var(--card); border-radius:14px; padding:12px 14px; margin-bottom:12px; }
+  .row { display:flex; align-items:center; gap:10px; min-height:40px; }
+  .muted { color:var(--muted); font-size:13px; }
+  .search { position:relative; display:flex; align-items:center; border-top:1px solid var(--line); border-bottom:1px solid var(--line); margin:6px 0; }
+  .search input { flex:1; border:0; outline:0; background:transparent; color:var(--text); font-size:17px; padding:12px 0; }
+  .search button { border:0; background:none; color:var(--muted); font-size:20px; }
+  .suggest { list-style:none; margin:0 0 6px; padding:0; }
+  .suggest li { padding:10px 2px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; cursor:pointer; }
+  .suggest li:last-child { border-bottom:0; }
+  .hidden { display:none !important; }
+  button.primary { width:100%; border:0; border-radius:12px; padding:13px; margin-top:8px; font-size:17px; font-weight:600;
+    background:var(--accent); color:#fff; }
+  button.primary:disabled { opacity:.45; }
+  button.secondary { border:0; border-radius:10px; padding:9px 12px; background:var(--bg); color:var(--blue); font-size:15px; }
+  input[type=datetime-local], select { font-size:16px; padding:6px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); }
+  #msg .card { color:#b35c00; }
+  .j { cursor:pointer; }
+  .j .top { display:flex; justify-content:space-between; align-items:baseline; }
+  .j .times { font-size:18px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .badge { font-size:11px; font-weight:700; padding:2px 7px; border-radius:99px; background:rgba(26,143,60,.15); color:var(--green); }
+  .chain { display:flex; flex-wrap:wrap; gap:4px; align-items:center; margin:6px 0; }
+  .line { display:inline-flex; gap:3px; align-items:center; font-size:12px; font-weight:700; color:#fff; padding:2px 6px; border-radius:5px; }
+  .walk { font-size:13px; color:var(--muted); }
+  .meta { display:flex; flex-wrap:wrap; gap:12px; font-size:13px; color:var(--muted); }
+  .leave { font-size:13px; color:var(--blue); margin-top:4px; }
+  .sectiontitle { font-size:13px; text-transform:uppercase; color:var(--muted); margin:16px 6px 6px; }
+  .foot { font-size:12px; color:var(--muted); margin:0 6px 12px; }
+  /* Overlays */
+  .sheet { position:fixed; inset:0; z-index:100; background:var(--bg); overflow-y:auto;
+    padding:calc(env(safe-area-inset-top) + 8px) 12px calc(env(safe-area-inset-bottom) + 30px); }
+  .sheet .bar { display:flex; align-items:center; justify-content:space-between; margin:4px 4px 12px; }
+  .sheet .bar h2 { font-size:18px; margin:0; }
+  .sheet .bar button { border:0; background:none; color:var(--blue); font-size:17px; padding:6px; }
+  #map { height:260px; border-radius:14px; margin-bottom:12px; }
+  .nav { display:block; text-align:center; text-decoration:none; background:var(--blue); color:#fff; font-weight:600;
+    border-radius:12px; padding:13px; margin-top:6px; }
+  .leg { display:flex; gap:10px; padding:10px 0; border-bottom:1px solid var(--line); }
+  .leg:last-child { border-bottom:0; }
+  .leg .ic { width:28px; text-align:center; font-size:18px; }
+  .t { font-variant-numeric:tabular-nums; font-weight:600; }
+  .late { color:#d12; font-size:12px; margin-left:3px; }
+  .early { color:#b35c00; font-size:12px; margin-left:3px; }
+  .favs { display:flex; gap:8px; margin:6px 0 8px; }
+  .fav { flex:1; min-width:0; border:0; border-radius:12px; padding:9px 4px; background:var(--bg); color:var(--text);
+    font-size:13px; display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .fav .ic { font-size:22px; line-height:1.1; }
+  .fav .lb { max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 4px; }
+  .fav.empty { background:transparent; border:1.5px dashed var(--line); color:var(--muted); }
+  .favlink { border:0; background:none; color:var(--blue); font-size:13px; padding:0 2px 4px; }
+  .hint { background:rgba(10,102,216,.12); color:var(--blue); border-radius:10px; padding:8px 10px; font-size:14px; margin:6px 0;
+    display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .hint button { border:0; background:none; color:var(--blue); font-weight:600; font-size:14px; }
+  label.setting { display:block; margin:10px 0; }
+  input[type=range] { width:100%; }
+  input[type=text] { width:100%; font-size:15px; padding:8px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); }
+  .spinner { display:inline-block; width:16px; height:16px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:sp .7s linear infinite; vertical-align:-3px; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fahrplan</h1>
+  <span id="regionChip" class="chip">…</span>
+  <button id="btnSettings" class="iconbtn" aria-label="Einstellungen">⚙︎</button>
+</header>
+
+<main>
+  <section class="card">
+    <div class="row"><span>📍</span><div><div id="locText">Standort wird ermittelt …</div><div id="locSub" class="muted"></div></div></div>
+    <div class="favs" id="favs"></div>
+    <div id="favHint" class="hint hidden"></div>
+    <div class="search">
+      <span style="margin-right:8px">🏁</span>
+      <input id="dest" placeholder="Wohin? Haltestelle, Adresse, Ort" autocomplete="off" autocorrect="off" enterkeyhint="search">
+      <button id="clearDest" class="hidden" aria-label="Löschen">⊗</button>
+    </div>
+    <ul id="suggest" class="suggest hidden"></ul>
+    <div class="row">
+      <label><input type="checkbox" id="now" checked> Jetzt losfahren</label>
+      <input type="datetime-local" id="when" class="hidden">
+    </div>
+    <button id="go" class="primary" disabled>Verbindungen suchen</button>
+  </section>
+  <div id="msg"></div>
+  <div id="results"></div>
+  <div id="recent"></div>
+</main>
+
+<!-- Detailansicht -->
+<div id="detail" class="sheet hidden">
+  <div class="bar"><button id="detailBack">‹ Zurück</button><h2 id="detailTitle"></h2><span style="width:60px"></span></div>
+  <div id="detailBody"></div>
+</div>
+
+<!-- Favoriten bearbeiten -->
+<div id="favEdit" class="sheet hidden">
+  <div class="bar"><span style="width:60px"></span><h2>Schnellziele</h2><button id="favEditDone">Fertig</button></div>
+  <div id="favEditSlots"></div>
+</div>
+
+<!-- Einstellungen -->
+<div id="settings" class="sheet hidden">
+  <div class="bar"><span style="width:60px"></span><h2>Einstellungen</h2><button id="settingsDone">Fertig</button></div>
+  <section class="card">
+    <label class="setting">Verkehrsgebiet<br>
+      <select id="setRegion">
+        <option value="auto">Automatisch (Standort)</option>
+        <option value="dresden">Dresden / VVO (Sachsen)</option>
+        <option value="berlin">Berlin / VBB (BVG)</option>
+      </select>
+    </label>
+  </section>
+  <section class="card">
+    <label class="setting">Max. Fußweg zur Haltestelle: <b id="maxWalkVal"></b> m
+      <input type="range" id="setMaxWalk" min="300" max="1500" step="100"></label>
+    <label class="setting">Gehtempo
+      <select id="setSpeed"><option value="slow">Gemütlich</option><option value="normal">Normal</option><option value="fast">Zügig</option></select>
+    </label>
+    <div class="muted">Längere Wege werden nur gewählt, wenn die Gesamtreise dadurch schneller oder einfacher wird.</div>
+  </section>
+  <section class="card">
+    <label class="setting">Ein Umstieg zählt wie <b id="penaltyVal"></b> min
+      <input type="range" id="setPenalty" min="0" max="15" step="1"></label>
+    <div class="muted">Höherer Wert = Verbindungen mit weniger Umstiegen werden bevorzugt, auch wenn sie etwas länger dauern.</div>
+  </section>
+  <section class="card">
+    <label class="setting">Proxy-Adresse (nur nötig, falls eine API blockiert)
+      <input type="text" id="setProxy" placeholder="https://fahrplan-proxy.DEINNAME.workers.dev" autocapitalize="off" autocorrect="off"></label>
+    <div class="muted">Datenquellen: VVO-WebAPI (Sachsen), v6.bvg.transport.rest (Berlin/Brandenburg).</div>
+  </section>
+</div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- Einstellungen
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("fp." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("fp." + k, JSON.stringify(v)); } catch {} }
+};
+const settings = {
+  region: store.get("region", "auto"),
+  maxWalk: store.get("maxWalk", 1000),
+  penalty: store.get("penalty", 5),
+  speed: store.get("speed", "normal"),
+  proxy: store.get("proxy", "")
+};
+const SPEED_MPM = { slow: 60, normal: 75, fast: 90 };
+
+// ---------------------------------------------------------------- Hilfsfunktionen
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const hhmm = d => d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+const mins = (a, b) => Math.round((b - a) / 60000);
+const euro = n => n.toFixed(2).replace(".", ",") + " €";
+/** Kurztext für die Liste, z. B. "1 Zone" oder "AB" */
+const fareShort = j => !j.fare ? null : j.fare.zoneCount != null ? (j.fare.names?.startsWith("Berlin") ? j.fare.names.slice(7) : j.fare.zoneCount + (j.fare.zoneCount === 1 ? " Zone" : " Zonen")) : j.fare.zones;
+
+const PRODUCTS = {
+  walk:     { icon: "🚶", color: "#8e8e93" },
+  tram:     { icon: "🚋", color: "#d9261c" },
+  bus:      { icon: "🚌", color: "#8d2a8c" },
+  sbahn:    { icon: "Ⓢ",  color: "#008d4f" },
+  ubahn:    { icon: "Ⓤ",  color: "#0a5bb4" },
+  regional: { icon: "🚆", color: "#b8261b" },
+  express:  { icon: "🚄", color: "#333" },
+  ferry:    { icon: "⛴", color: "#0b8a8a" },
+  other:    { icon: "🚡", color: "#e07b00" }
+};
+
+const proxyHosts = new Set(); // Hosts, die nur über den Proxy funktionieren
+async function fetchJSON(url, opts = {}) {
+  const host = new URL(url).host;
+  const viaProxy = () => settings.proxy.replace(/\/+$/, "") + "/?url=" + encodeURIComponent(url);
+  const run = async u => {
+    const r = await fetch(u, opts);
+    if (!r.ok) throw new Error("Server antwortet mit HTTP " + r.status);
+    return r.json();
+  };
+  if (settings.proxy && proxyHosts.has(host)) return run(viaProxy());
+  try { return await run(url); }
+  catch (e) {
+    if (e instanceof TypeError) {
+      if (settings.proxy) { proxyHosts.add(host); return run(viaProxy()); }
+      throw new Error(host + " ist nicht erreichbar. Falls das dauerhaft so ist, blockiert der Dienst Browser-Zugriffe – dann in den Einstellungen eine Proxy-Adresse eintragen (siehe Anleitung).");
+    }
+    throw e;
+  }
+}
+
+// ---------------------------------------------------------------- Gauß-Krüger (für VVO)
+const GK = (() => {
+  const WGS = { a: 6378137.0, f: 1 / 298.257223563 }, BES = { a: 6377397.155, f: 1 / 299.1528128 };
+  const AS = Math.PI / (180 * 3600);
+  const P = { tx: 598.1, ty: 73.7, tz: 418.2, rx: 0.202 * AS, ry: 0.045 * AS, rz: -2.455 * AS, s: 6.7e-6 };
+  const e2 = el => el.f * (2 - el.f), rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
+  const { sin, cos, tan, sqrt, atan2, pow } = Math;
+  function ecef(lat, lon, el) {
+    const a = el.a, E = e2(el), p = rad(lat), l = rad(lon), N = a / sqrt(1 - E * sin(p) ** 2);
+    return [N * cos(p) * cos(l), N * cos(p) * sin(l), N * (1 - E) * sin(p)];
+  }
+  function geo([x, y, z], el) {
+    const a = el.a, E = e2(el), p = Math.hypot(x, y), l = atan2(y, x);
+    let ph = atan2(z, p * (1 - E));
+    for (let i = 0; i < 6; i++) { const N = a / sqrt(1 - E * sin(ph) ** 2), h = p / cos(ph) - N; ph = atan2(z, p * (1 - E * N / (N + h))); }
+    return [deg(ph), deg(l)];
+  }
+  function helm([x, y, z], inv) {
+    const g = inv ? -1 : 1, tx = g * P.tx, ty = g * P.ty, tz = g * P.tz, rx = g * P.rx, ry = g * P.ry, rz = g * P.rz, s = g * P.s;
+    return [tx + (1 + s) * (x - rz * y + ry * z), ty + (1 + s) * (rz * x + y - rx * z), tz + (1 + s) * (-ry * x + rx * y + z)];
+  }
+  function tmf([lat, lon], el) {
+    const a = el.a, E = e2(el), ep = E / (1 - E), p = rad(lat), A = rad(lon - 12) * cos(p);
+    const N = a / sqrt(1 - E * sin(p) ** 2), T = tan(p) ** 2, C = ep * cos(p) ** 2;
+    const M = a * ((1 - E / 4 - 3 * E ** 2 / 64 - 5 * E ** 3 / 256) * p - (3 * E / 8 + 3 * E ** 2 / 32 + 45 * E ** 3 / 1024) * sin(2 * p)
+      + (15 * E ** 2 / 256 + 45 * E ** 3 / 1024) * sin(4 * p) - (35 * E ** 3 / 3072) * sin(6 * p));
+    const x = N * (A + (1 - T + C) * A ** 3 / 6 + (5 - 18 * T + T * T + 72 * C - 58 * ep) * A ** 5 / 120);
+    const y = M + N * tan(p) * (A * A / 2 + (5 - T + 9 * C + 4 * C * C) * A ** 4 / 24 + (61 - 58 * T + T * T + 600 * C - 330 * ep) * A ** 6 / 720);
+    return [4500000 + x, y];
+  }
+  function tmi(r, h, el) {
+    const a = el.a, E = e2(el), ep = E / (1 - E), x = r - 4500000;
+    const mu = h / (a * (1 - E / 4 - 3 * E ** 2 / 64 - 5 * E ** 3 / 256)), e1 = (1 - sqrt(1 - E)) / (1 + sqrt(1 - E));
+    const p1 = mu + (3 * e1 / 2 - 27 * e1 ** 3 / 32) * sin(2 * mu) + (21 * e1 ** 2 / 16 - 55 * e1 ** 4 / 32) * sin(4 * mu)
+      + (151 * e1 ** 3 / 96) * sin(6 * mu) + (1097 * e1 ** 4 / 512) * sin(8 * mu);
+    const C1 = ep * cos(p1) ** 2, T1 = tan(p1) ** 2, s2 = 1 - E * sin(p1) ** 2, N1 = a / sqrt(s2), R1 = a * (1 - E) / pow(s2, 1.5), D = x / N1;
+    const p = p1 - (N1 * tan(p1) / R1) * (D * D / 2 - (5 + 3 * T1 + 10 * C1 - 4 * C1 * C1 - 9 * ep) * D ** 4 / 24
+      + (61 + 90 * T1 + 298 * C1 + 45 * T1 * T1 - 252 * ep - 3 * C1 * C1) * D ** 6 / 720);
+    const l = rad(12) + (D - (1 + 2 * T1 + C1) * D ** 3 / 6 + (5 - 2 * C1 + 28 * T1 - 3 * C1 * C1 + 8 * ep + 24 * T1 * T1) * D ** 5 / 120) / cos(p1);
+    return [deg(p), deg(l)];
+  }
+  return {
+    /** WGS84 -> [Rechtswert, Hochwert] */
+    fromWGS: (lat, lon) => tmf(geo(helm(ecef(lat, lon, WGS), true), BES), BES),
+    /** GK4 -> [lat, lon] */
+    toWGS: (r, h) => { const [la, lo] = tmi(r, h, BES); return geo(helm(ecef(la, lo, BES), false), WGS); }
+  };
+})();
+
+// ---------------------------------------------------------------- Berlin / VBB (BVG)
+const BVG = {
+  base: "https://v6.bvg.transport.rest",
+  async search(q) {
+    const u = new URL(this.base + "/locations");
+    Object.entries({ query: q, results: 12, stops: true, addresses: true, poi: true, fuzzy: true, linesOfStops: false, language: "de" })
+      .forEach(([k, v]) => u.searchParams.set(k, v));
+    const arr = await fetchJSON(u.toString());
+    return (arr || []).map(l => {
+      const lat = l.latitude ?? l.location?.latitude, lon = l.longitude ?? l.location?.longitude;
+      if ((l.type === "stop" || l.type === "station") && l.id)
+        return { id: l.id, name: l.name, detail: "Haltestelle", lat, lon, kind: "stop", region: "berlin" };
+      if (lat == null) return null;
+      if (l.poi) return { id: l.id || `${lat},${lon}`, name: l.name || l.address, detail: l.address || "Ort", lat, lon, kind: "poi", region: "berlin" };
+      return { id: `${lat},${lon}`, name: l.address || l.name, detail: "Adresse", lat, lon, kind: "address", region: "berlin" };
+    }).filter(Boolean);
+  },
+  async journeys(from, to, dep, few) {
+    const u = new URL(this.base + "/journeys");
+    const p = {
+      "from.latitude": from.lat.toFixed(6), "from.longitude": from.lon.toFixed(6), "from.address": "Mein Standort",
+      departure: dep.toISOString(), results: 6, stopovers: false, remarks: false, language: "de", walkingSpeed: settings.speed, tickets: true
+    };
+    if (few) p.transfers = 1;
+    if (to.kind === "stop") p.to = to.id;
+    else {
+      p["to.latitude"] = to.lat; p["to.longitude"] = to.lon;
+      if (to.kind === "poi") { p["to.id"] = to.id; p["to.name"] = to.name; p["to.poi"] = true; }
+      else p["to.address"] = to.name;
+    }
+    Object.entries(p).forEach(([k, v]) => u.searchParams.set(k, v));
+    const r = await fetchJSON(u.toString());
+    return (r.journeys || []).map(j => this.convert(j)).filter(Boolean);
+  },
+  convert(j) {
+    const prod = { suburban: "sbahn", subway: "ubahn", tram: "tram", bus: "bus", ferry: "ferry", regional: "regional", express: "express" };
+    const coord = o => [o?.latitude ?? o?.location?.latitude, o?.longitude ?? o?.location?.longitude];
+    const legs = (j.legs || []).map(l => {
+      const dep = new Date(l.departure || l.plannedDeparture), arr = new Date(l.arrival || l.plannedArrival);
+      if (isNaN(dep) || isNaN(arr)) return null;
+      const walking = l.walking ?? !l.line;
+      const [oLat, oLon] = coord(l.origin), [dLat, dLon] = coord(l.destination);
+      return {
+        walking, product: walking ? "walk" : (prod[l.line?.product] || "other"), line: l.line?.name, dir: l.direction,
+        origin: l.origin?.name || l.origin?.address || "Start", dest: l.destination?.name || l.destination?.address || "Ziel",
+        dep, arr, depDelay: l.departureDelay != null ? Math.round(l.departureDelay / 60) : null,
+        arrDelay: l.arrivalDelay != null ? Math.round(l.arrivalDelay / 60) : null,
+        platform: l.departurePlatform, dist: l.distance ?? null, oLat, oLon, dLat, dLon, cancelled: !!l.cancelled
+      };
+    }).filter(Boolean);
+    if (!legs.length) return null;
+    const fare = this.fare(j);
+    const amount = fare.single?.price ?? j.price?.amount;
+    const price = amount != null ? euro(amount) : null;
+    return { legs, price, fare };
+  },
+  /** Tarifbereich (A/B/C) aus den Fahrscheininfos ermitteln */
+  fare(j) {
+    const tickets = (j.tickets || []).map(t => {
+      let pr = t.price ?? t.priceObj?.amount ?? t.amount;
+      if (typeof pr === "number" && pr > 60) pr = pr / 100;            // Angabe in Cent
+      const text = [t.name, t.tariff, t.coverage, t.variant].filter(Boolean).join(" ");
+      const zone = (/\b(ABC|AB|BC)\b/.exec(text) || [])[1] || (/Kurzstrecke/i.test(text) ? "Kurzstrecke" : null);
+      return { name: t.name || "Fahrschein", price: typeof pr === "number" ? pr : null, zone };
+    });
+    const adult = tickets.filter(t => !/erm(ä|ae)(ss|ß)igt|kind|schüler|4-fahrten|tages|24|monat|abo/i.test(t.name));
+    const single = adult.find(t => /einzel/i.test(t.name)) || adult.find(t => t.zone) || tickets[0] || null;
+    const zone = single?.zone || tickets.find(t => t.zone)?.zone || null;
+    const day = tickets.find(t => /24|tages/i.test(t.name) && !/erm|kind/i.test(t.name));
+    return {
+      zones: zone ? (zone === "Kurzstrecke" ? "Kurzstrecke" : `Tarifbereich ${zone}`) : null,
+      zoneCount: zone && zone !== "Kurzstrecke" ? zone.length : null,
+      names: zone && zone !== "Kurzstrecke" ? `Berlin ${zone}` : null,
+      single, dayPrice: day?.price != null ? euro(day.price) : null,
+      tickets: tickets.slice(0, 6).map(t => ({ name: t.name, price: t.price != null ? euro(t.price) : null }))
+    };
+  }
+};
+
+// ---------------------------------------------------------------- Dresden / VVO
+const VVO = {
+  base: "https://webapi.vvo-online.de",
+  async pointfinder(query, limit, assigned) {
+    const u = new URL(this.base + "/tr/pointfinder");
+    Object.entries({ query, limit, stopsOnly: false, regionalOnly: false, assignedstops: assigned, format: "json" })
+      .forEach(([k, v]) => u.searchParams.set(k, v));
+    return fetchJSON(u.toString());
+  },
+  /** "33000742|||Helmholtzstraße|5655904|4621157|0||" */
+  parsePoint(raw) {
+    const p = raw.split("|");
+    if (p.length < 6 || !p[0]) return null;
+    const [id, type, city, name] = p;
+    let lat = null, lon = null;
+    const a = parseFloat(p[4]), b = parseFloat(p[5]);
+    if (a && b) {
+      if (p[4].includes(".") && a < 90) { lat = a; lon = b; }
+      else { [lat, lon] = GK.toWGS(b, a); }           // Index 4 = Hochwert, 5 = Rechtswert
+    }
+    const kind = type === "a" || type === "c" ? "address" : type === "p" ? "poi" : "stop";
+    const detail = [city || null, kind === "stop" ? "Haltestelle" : kind === "poi" ? "Ort" : "Adresse"].filter(Boolean).join(" · ");
+    return { id, name, detail, lat, lon, kind, region: "dresden" };
+  },
+  async search(q) {
+    const r = await this.pointfinder(q, 15, false);
+    return (r.Points || []).map(x => this.parsePoint(x)).filter(Boolean);
+  },
+  /** EFA-ID für die GPS-Position (Koordinaten-ID, notfalls nächste Haltestelle) */
+  async originId(lat, lon) {
+    const [R, H] = GK.fromWGS(lat, lon).map(Math.round);
+    let fallback = null;
+    for (const q of [`coord:${R}:${H}`, `coord:${H}:${R}`]) {
+      let r; try { r = await this.pointfinder(q, 10, true); } catch (e) { continue; }
+      const pts = r.Points || [];
+      const c = pts.find(x => x.startsWith("coord:"));
+      if (c) return c.split("|")[0];
+      if (!fallback && pts.length) fallback = pts[0].split("|")[0];
+    }
+    if (fallback) return fallback;
+    throw new Error("Dein Standort konnte keinem Ort im VVO-Gebiet zugeordnet werden.");
+  },
+  async journeys(from, to, dep, few) {
+    const origin = await this.originId(from.lat, from.lon);
+    const walkMin = Math.max(5, Math.ceil(settings.maxWalk / SPEED_MPM[settings.speed]));
+    const body = {
+      origin, destination: to.id, time: dep.toISOString(), isarrivaltime: false, shorttermchanges: true,
+      standardSettings: {
+        mot: ["Tram", "CityBus", "IntercityBus", "SuburbanRailway", "Train", "Cableway", "Ferry", "HailedSharedTaxi"],
+        maxChanges: few ? "One" : "Unlimited",
+        walkingSpeed: { slow: "Slow", normal: "Normal", fast: "Fast" }[settings.speed],
+        footpathToStop: walkMin, includeAlternativeStops: true, extraCharge: "None"
+      },
+      format: "json"
+    };
+    const r = await fetchJSON(this.base + "/tr/trips", {
+      method: "POST", headers: { "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify(body)
+    });
+    if (r.Status && r.Status.Code && r.Status.Code !== "Ok") throw new Error("VVO meldet: " + (r.Status.Message || r.Status.Code));
+    return (r.Routes || []).map(rt => this.convert(rt, from)).filter(Boolean);
+  },
+  parseDate(s) { const m = /\((\d+)/.exec(s || ""); return m ? new Date(+m[1]) : null; },
+  product(t) {
+    if (t === "Footpath") return "walk";
+    if (t === "Tram") return "tram";
+    if (t === "SuburbanRailway" || t === "RapidTransit") return "sbahn";
+    if (t === "Train") return "regional";
+    if (t === "Ferry") return "ferry";
+    if (/Bus|Taxi/.test(t)) return "bus";
+    return "other";
+  },
+  pathLength(s) {
+    const n = s.split("|").slice(1).map(parseFloat).filter(x => !isNaN(x));
+    if (n.length < 4) return null;
+    let t = 0; for (let i = 2; i + 1 < n.length; i += 2) t += Math.hypot(n[i] - n[i - 2], n[i + 1] - n[i - 1]);
+    return Math.round(t);
+  },
+  convert(route, from) {
+    const num = v => (v == null || v === "" ? null : +v);
+    const d = [];
+    for (const pr of route.PartialRoutes || []) {
+      const type = pr.Mot?.Type || "Footpath";
+      if (type.startsWith("Mobility") || type === "StayForConnection" || type === "StayInVehicle") continue;
+      const stops = pr.RegularStops || [], f = stops[0], l = stops[stops.length - 1];
+      const pd = this.parseDate(f?.DepartureTime), rd = this.parseDate(f?.DepartureRealTime);
+      const pa = this.parseDate(l?.ArrivalTime), ra = this.parseDate(l?.ArrivalRealTime);
+      const walking = type === "Footpath";
+      const x = {
+        walking, product: this.product(type), line: walking ? null : pr.Mot?.Name, dir: pr.Mot?.Direction,
+        origin: f?.Name, dest: l?.Name, dep: rd || pd, arr: ra || pa,
+        depDelay: pd && rd ? mins(pd, rd) : null, arrDelay: pa && ra ? mins(pa, ra) : null,
+        platform: f?.Platform?.Name, dur: pr.Duration || 0, dist: null
+      };
+      if (num(f?.Latitude) > 1000) [x.oLat, x.oLon] = GK.toWGS(num(f.Longitude), num(f.Latitude));
+      if (num(l?.Latitude) > 1000) [x.dLat, x.dLon] = GK.toWGS(num(l.Longitude), num(l.Latitude));
+      if (walking && pr.MapDataIndex != null && route.MapData?.[pr.MapDataIndex]) x.dist = this.pathLength(route.MapData[pr.MapDataIndex]);
+      d.push(x);
+    }
+    if (!d.length) return null;
+    // Fußwege ohne Zeiten aus Nachbarabschnitten ergänzen
+    d.forEach((x, i) => {
+      if (x.dep && x.arr) return;
+      if (d[i + 1]?.dep) { x.arr = d[i + 1].dep; x.dep = new Date(x.arr - x.dur * 60000); }
+      else if (d[i - 1]?.arr) { x.dep = d[i - 1].arr; x.arr = new Date(+x.dep + x.dur * 60000); }
+    });
+    d.forEach((x, i) => {
+      if (!x.origin) x.origin = i === 0 ? "Mein Standort" : d[i - 1].dest;
+      if (!x.dest) x.dest = d[i + 1]?.origin || "Ziel";
+      if (x.oLat == null) { if (i === 0) { x.oLat = from.lat; x.oLon = from.lon; } else { x.oLat = d[i - 1].dLat; x.oLon = d[i - 1].dLon; } }
+    });
+    const legs = d.filter(x => x.dep && x.arr);
+    if (!legs.length) return null;
+    const zc = parseInt(route.NumberOfFareZones, 10);
+    const fare = {
+      zones: route.NumberOfFareZones || null,                  // z. B. "1 Tarifzone"
+      zoneCount: isNaN(zc) ? null : zc,
+      names: route.FareZoneNames || null,                      // z. B. "TZ Dresden (10)"
+      dayPrice: route.PriceDayTicket ? route.PriceDayTicket + " €" : null,
+      tickets: (route.Tickets || []).slice(0, 6).map(t => ({ name: t.Name, price: t.Price ? t.Price + " €" : null, zones: t.NumberOfFareZones }))
+    };
+    return { legs, price: route.Price ? route.Price + " €" : null, fare };
+  }
+};
+
+// ---------------------------------------------------------------- Bewertung
+const J = {
+  transit: j => j.legs.filter(l => !l.walking),
+  transfers: j => Math.max(0, J.transit(j).length - 1),
+  dep: j => j.legs[0].dep,
+  arr: j => j.legs[j.legs.length - 1].arr,
+  walkM: l => l.dist ?? mins(l.dep, l.arr) * SPEED_MPM[settings.speed],
+  accessWalk: j => (j.legs[0].walking ? J.walkM(j.legs[0]) : 0),
+  totalWalk: j => j.legs.filter(l => l.walking).reduce((s, l) => s + J.walkM(l), 0),
+  sig: j => J.transit(j).map(l => (l.line || "?") + "@" + +l.dep).join("|")
+};
+
+function rank(list, now) {
+  const seen = new Set();
+  list = list.filter(j => !j.legs.some(l => l.cancelled) && J.arr(j) > now && !seen.has(J.sig(j)) && seen.add(J.sig(j)));
+  const ok = list.filter(j => J.accessWalk(j) <= settings.maxWalk * 1.1);
+  if (ok.length) list = ok;
+  for (const j of list) {
+    j.score = (J.arr(j) - now) / 60000 + J.transfers(j) * settings.penalty + J.totalWalk(j) / 1000 * 1.5;
+  }
+  list.sort((a, b) => a.score - b.score);
+  list.forEach((j, i) => (j.recommended = i === 0));
+  return list.slice(0, 8);
+}
+
+// ---------------------------------------------------------------- Zustand
+const state = { loc: null, dest: null, journeys: [], recent: store.get("recent", []), loading: false,
+  favs: store.get("favs", [null, null]), assignSlot: null };
+const region = () => settings.region !== "auto" ? settings.region : (state.loc && state.loc.lat >= 51.6 ? "berlin" : "dresden");
+const provider = () => (region() === "berlin" ? BVG : VVO);
+const regionTitle = r => (r === "berlin" ? "Berlin · VBB" : "Dresden · VVO");
+
+// ---------------------------------------------------------------- Standort
+function startLocation() {
+  if (!("geolocation" in navigator)) { $("#locText").textContent = "Standort wird nicht unterstützt"; return; }
+  navigator.geolocation.watchPosition(p => {
+    const first = !state.loc;
+    const prevRegion = region();
+    state.loc = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
+    $("#locText").textContent = "Mein Standort";
+    $("#locSub").textContent = "Genauigkeit ±" + Math.round(p.coords.accuracy) + " m";
+    if (first || prevRegion !== region()) onRegionChange();
+    updateGo();
+  }, err => {
+    $("#locText").textContent = err.code === 1 ? "Standortzugriff verweigert" : "Standort nicht verfügbar";
+    $("#locSub").textContent = err.code === 1 ? "iPhone-Einstellungen › Datenschutz › Ortungsdienste › Safari-Websites erlauben" : err.message;
+  }, { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 });
+}
+
+function onRegionChange() {
+  $("#regionChip").textContent = regionTitle(region());
+  if (state.dest && state.dest.region !== region()) { setDest(null); state.journeys = []; renderResults(); }
+  renderRecent();
+}
+
+// ---------------------------------------------------------------- Zielsuche
+let searchTimer = null, searchSeq = 0;
+$("#dest").addEventListener("input", e => {
+  const q = e.target.value.trim();
+  state.dest = null; updateGo();
+  $("#clearDest").classList.toggle("hidden", !q);
+  clearTimeout(searchTimer);
+  if (q.length < 2) { $("#suggest").classList.add("hidden"); return; }
+  searchTimer = setTimeout(async () => {
+    const seq = ++searchSeq;
+    const ul = $("#suggest");
+    ul.classList.remove("hidden");
+    ul.innerHTML = '<li class="muted"><span class="spinner"></span> Suche …</li>';
+    try {
+      const res = await provider().search(q);
+      if (seq !== searchSeq) return;
+      ul.innerHTML = res.length ? "" : '<li class="muted">Keine Treffer</li>';
+      res.forEach(p => ul.appendChild(placeItem(p, () => pickPlace(p))));
+    } catch (err) {
+      if (seq === searchSeq) ul.innerHTML = `<li class="muted">${esc(err.message)}</li>`;
+    }
+  }, 350);
+});
+$("#dest").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("#suggest li[data-place]")?.click(); } });
+$("#clearDest").addEventListener("click", () => { setDest(null); $("#dest").focus(); });
+
+const kindIcon = k => (k === "stop" ? "🚏" : k === "poi" ? "📍" : "🏠");
+function placeItem(p, onClick) {
+  const li = document.createElement("li");
+  li.dataset.place = "1";
+  li.innerHTML = `<span>${kindIcon(p.kind)}</span><div><div>${esc(p.name)}</div><div class="muted">${esc(p.detail || "")}</div></div>`;
+  li.addEventListener("click", onClick);
+  return li;
+}
+function setDest(p) {
+  state.dest = p;
+  $("#dest").value = p ? p.name : "";
+  $("#clearDest").classList.toggle("hidden", !p);
+  $("#suggest").classList.add("hidden");
+  updateGo();
+}
+function selectDest(p) {
+  setDest(p);
+  $("#dest").blur();
+  state.recent = [p, ...state.recent.filter(r => !(r.id === p.id && r.region === p.region))].slice(0, 10);
+  store.set("recent", state.recent);
+}
+function updateGo() { $("#go").disabled = !state.dest || !state.loc || state.loading; }
+
+$("#now").addEventListener("change", e => {
+  const w = $("#when");
+  w.classList.toggle("hidden", e.target.checked);
+  if (!e.target.checked && !w.value) {
+    const d = new Date(Date.now() + 15 * 60000); d.setSeconds(0, 0);
+    w.value = new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  }
+});
+$("#go").addEventListener("click", runSearch);
+
+// ---------------------------------------------------------------- Verbindungssuche
+async function runSearch() {
+  if (!state.dest || !state.loc || state.loading) return;
+  const dep = $("#now").checked || !$("#when").value ? new Date() : new Date($("#when").value);
+  state.loading = true; updateGo();
+  $("#go").innerHTML = '<span class="spinner"></span> Suche …';
+  $("#msg").innerHTML = "";
+  const prov = provider(), from = { lat: state.loc.lat, lon: state.loc.lon };
+  // zwei Abfragen parallel: schnellste + max. 1 Umstieg
+  const res = await Promise.allSettled([prov.journeys(from, state.dest, dep, false), prov.journeys(from, state.dest, dep, true)]);
+  const all = res.flatMap(r => (r.status === "fulfilled" ? r.value : []));
+  const err = res.find(r => r.status === "rejected")?.reason;
+  state.journeys = all.length ? rank(all, new Date(Math.min(+dep, Date.now()))) : [];
+  if (!state.journeys.length) $("#msg").innerHTML = `<div class="card">⚠️ ${esc(err ? err.message : "Keine passende Verbindung gefunden.")}</div>`;
+  state.loading = false; updateGo();
+  $("#go").textContent = "Verbindungen suchen";
+  renderResults();
+}
+
+function lineChip(l) {
+  const p = PRODUCTS[l.product] || PRODUCTS.other;
+  return `<span class="line" style="background:${p.color}">${p.icon} ${esc(l.line || "")}</span>`;
+}
+function leaveText(j) {
+  const first = J.transit(j)[0]; if (!first) return "Nur Fußweg";
+  const m = mins(Date.now(), J.dep(j));
+  const start = j.legs[0].walking ? (m <= 0 ? "Jetzt losgehen" : `Losgehen in ${m} min`) : (m <= 0 ? "Fährt jetzt" : `Abfahrt in ${m} min`);
+  const delay = first.depDelay > 0 ? ` (+${first.depDelay})` : "";
+  return `${start} · ${first.line || ""} ab ${first.origin} ${hhmm(first.dep)}${delay}`;
+}
+
+function renderResults() {
+  const box = $("#results");
+  if (!state.journeys.length) { box.innerHTML = ""; renderRecent(); return; }
+  $("#recent").innerHTML = "";
+  box.innerHTML = `<div class="sectiontitle">Verbindungen <button class="secondary" id="refresh" style="float:right;margin-top:-8px">↻ Aktualisieren</button></div>`;
+  state.journeys.forEach((j, i) => {
+    const t = J.transfers(j), aw = Math.round(J.accessWalk(j));
+    const chain = j.legs.map(l => l.walking ? (mins(l.dep, l.arr) > 0 ? '<span class="walk">🚶</span>' : "") : lineChip(l)).join("");
+    const el = document.createElement("div");
+    el.className = "card j";
+    el.innerHTML = `
+      <div class="top"><span class="times">${hhmm(J.dep(j))} → ${hhmm(J.arr(j))}</span>${j.recommended ? '<span class="badge">EMPFOHLEN</span>' : ""}</div>
+      <div class="chain">${chain}</div>
+      <div class="meta"><span>⏱ ${mins(J.dep(j), J.arr(j))} min</span><span>⇄ ${t === 0 ? "direkt" : t + " Umst."}</span>${aw > 0 ? `<span>🚶 ${aw} m</span>` : ""}${fareShort(j) || j.price ? `<span>🎫 ${esc([fareShort(j), j.price].filter(Boolean).join(" · "))}</span>` : ""}</div>
+      <div class="leave">${esc(leaveText(j))}</div>`;
+    el.addEventListener("click", () => openDetail(i));
+    box.appendChild(el);
+  });
+  box.insertAdjacentHTML("beforeend", `<div class="foot">Sortiert nach Ankunft; jeder Umstieg zählt wie ${settings.penalty} min. Fußweg zur Haltestelle max. ${settings.maxWalk} m.</div>`);
+  $("#refresh").addEventListener("click", e => { e.stopPropagation(); runSearch(); });
+}
+
+function renderRecent() {
+  const box = $("#recent");
+  if (state.journeys.length) { box.innerHTML = ""; return; }
+  const list = state.recent.filter(p => p.region === region());
+  if (!list.length) { box.innerHTML = ""; return; }
+  box.innerHTML = '<div class="sectiontitle">Zuletzt gesucht</div><section class="card"><ul class="suggest" id="recentList"></ul></section>';
+  list.forEach(p => $("#recentList").appendChild(placeItem(p, () => pickPlace(p))));
+}
+
+// ---------------------------------------------------------------- Detailansicht
+let map = null;
+function openDetail(i) {
+  const j = state.journeys[i], board = J.transit(j)[0];
+  $("#detailTitle").textContent = `${hhmm(J.dep(j))} → ${hhmm(J.arr(j))}`;
+  let html = "";
+  if (board && board.oLat != null) {
+    const walkLeg = j.legs[0].walking ? j.legs[0] : null;
+    html += `${window.L ? '<div id="map"></div>' : ""}<section class="card">
+      ${walkLeg ? `<div class="row">🚶 ${Math.round(J.walkM(walkLeg))} m Fußweg · ca. ${mins(walkLeg.dep, walkLeg.arr)} min bis „${esc(board.origin)}“</div>` : ""}
+      <a class="nav" href="https://maps.apple.com/?daddr=${board.oLat},${board.oLon}&dirflg=w">🧭 Zur Haltestelle „${esc(board.origin)}“ navigieren</a>
+    </section>`;
+  }
+  html += `<div class="sectiontitle">Ablauf</div><section class="card">`;
+  for (const l of j.legs) {
+    const p = PRODUCTS[l.product] || PRODUCTS.other;
+    if (l.walking) {
+      const m = mins(l.dep, l.arr); if (m <= 0 && !l.dist) continue;
+      html += `<div class="leg"><div class="ic">🚶</div><div><b>Fußweg ${m} min${l.dist ? " · " + l.dist + " m" : ""}</b><div class="muted">bis ${esc(l.dest)}</div></div></div>`;
+    } else {
+      const dl = (d) => d ? `<span class="${d > 0 ? "late" : "early"}">${d > 0 ? "+" : ""}${d}</span>` : "";
+      html += `<div class="leg"><div class="ic" style="color:${p.color}">${p.icon}</div><div>
+        <div>${lineChip(l)} ${l.dir ? `<span class="muted">→ ${esc(l.dir)}</span>` : ""}</div>
+        <div><span class="t">${hhmm(l.dep)}</span>${dl(l.depDelay)} ${esc(l.origin)}${l.platform ? ` <span class="muted">· Steig ${esc(l.platform)}</span>` : ""}</div>
+        <div><span class="t">${hhmm(l.arr)}</span>${dl(l.arrDelay)} ${esc(l.dest)}</div></div></div>`;
+    }
+  }
+  html += `</section><section class="card">
+    <div class="row" style="justify-content:space-between"><span>Dauer</span><b>${mins(J.dep(j), J.arr(j))} min</b></div>
+    <div class="row" style="justify-content:space-between"><span>Umstiege</span><b>${J.transfers(j)}</b></div>
+    <div class="row" style="justify-content:space-between"><span>Fußwege gesamt</span><b>${Math.round(J.totalWalk(j))} m</b></div>
+  </section>`;
+  const f = j.fare || {};
+  if (f.zones || f.names || j.price) {
+    const r = (a, b) => b ? `<div class="row" style="justify-content:space-between;gap:16px"><span>${a}</span><b style="text-align:right">${esc(b)}</b></div>` : "";
+    html += `<div class="sectiontitle">Fahrschein</div><section class="card">
+      ${r("Tarifzonen", f.zones)}${r("Zone(n)", f.names)}${r("Einzelfahrt", j.price)}${r("Tageskarte", f.dayPrice)}
+      ${(f.tickets || []).length > 1 ? `<div class="muted" style="margin-top:6px">${f.tickets.map(t => esc(t.name + (t.price ? " " + t.price : ""))).join(" · ")}</div>` : ""}
+      <div class="muted" style="margin-top:6px">Angaben der Fahrplanauskunft, ohne Gewähr. Mit Deutschlandticket ist keine Fahrkarte nötig.</div>
+    </section>`;
+  }
+  $("#detailBody").innerHTML = html;
+  $("#detail").classList.remove("hidden");
+  $("#detail").scrollTop = 0;
+
+  if (board && board.oLat != null && window.L) {
+    if (map) { map.remove(); map = null; }
+    map = L.map("map", { zoomControl: false, attributionControl: true });
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(map);
+    const stop = [board.oLat, board.oLon];
+    L.marker(stop).addTo(map).bindPopup(esc(board.origin)).openPopup();
+    const pts = [stop];
+    if (state.loc) {
+      const me = [state.loc.lat, state.loc.lon];
+      L.circleMarker(me, { radius: 8, color: "#fff", weight: 3, fillColor: "#0a66d8", fillOpacity: 1 }).addTo(map);
+      L.polyline([me, stop], { color: "#0a66d8", weight: 4, dashArray: "6 8" }).addTo(map);
+      pts.push(me);
+    }
+    map.fitBounds(L.latLngBounds(pts).pad(0.3), { maxZoom: 17 });
+    setTimeout(() => map.invalidateSize(), 50);
+  }
+}
+$("#detailBack").addEventListener("click", () => $("#detail").classList.add("hidden"));
+
+// ---------------------------------------------------------------- Einstellungen
+function openSettings() {
+  $("#setRegion").value = settings.region;
+  $("#setMaxWalk").value = settings.maxWalk; $("#maxWalkVal").textContent = settings.maxWalk;
+  $("#setPenalty").value = settings.penalty; $("#penaltyVal").textContent = settings.penalty;
+  $("#setSpeed").value = settings.speed;
+  $("#setProxy").value = settings.proxy;
+  $("#settings").classList.remove("hidden");
+}
+$("#btnSettings").addEventListener("click", openSettings);
+$("#setMaxWalk").addEventListener("input", e => ($("#maxWalkVal").textContent = e.target.value));
+$("#setPenalty").addEventListener("input", e => ($("#penaltyVal").textContent = e.target.value));
+$("#settingsDone").addEventListener("click", () => {
+  const before = region();
+  settings.region = $("#setRegion").value;
+  settings.maxWalk = +$("#setMaxWalk").value;
+  settings.penalty = +$("#setPenalty").value;
+  settings.speed = $("#setSpeed").value;
+  settings.proxy = $("#setProxy").value.trim();
+  proxyHosts.clear();
+  Object.entries(settings).forEach(([k, v]) => store.set(k, v));
+  $("#settings").classList.add("hidden");
+  if (before !== region()) onRegionChange();
+  else if (state.journeys.length) runSearch();
+});
+
+// ---------------------------------------------------------------- Schnellziele
+// Heimadresse und Schnellziele stehen NICHT im Code, sondern werden nur lokal auf dem Gerät gespeichert.
+try { localStorage.removeItem("fp.homeCache"); } catch {}
+state.home = store.get("home", null);                       // { label, place }
+const SLOTS = ["home", 0, 1];
+const getSlot = s => (s === "home" ? state.home : state.favs[s]);
+const slotName = s => (s === "home" ? "Zu Hause" : getSlot(s)?.label || `Ziel ${s + 1}`);
+function setSlot(s, v) {
+  if (s === "home") { state.home = v; store.set("home", v); }
+  else { state.favs[s] = v; store.set("favs", state.favs); }
+}
+
+function renderFavs() {
+  const box = $("#favs");
+  box.innerHTML = "";
+  for (const s of SLOTS) {
+    const f = getSlot(s), isHome = s === "home";
+    const b = document.createElement("button");
+    b.className = "fav" + (f ? "" : " empty");
+    const icon = f ? (isHome ? "🏠" : "⭐") : "＋";
+    const label = f ? slotName(s) : (isHome ? "Zu Hause" : `Ziel ${s + 1} festlegen`);
+    b.innerHTML = `<span class="ic">${icon}</span><span class="lb">${esc(label)}</span>`;
+    b.addEventListener("click", () => (f ? goFav(s, b) : startAssign(s)));
+    box.appendChild(b);
+  }
+  if (!$("#favEditLink")) {
+    box.insertAdjacentHTML("afterend", '<button id="favEditLink" class="favlink">Schnellziele bearbeiten</button>');
+    $("#favEditLink").addEventListener("click", openFavEdit);
+  }
+}
+
+function showMsg(text) { $("#msg").innerHTML = text ? `<div class="card">⚠️ ${esc(text)}</div>` : ""; }
+
+async function goFav(slot, button) {
+  if (state.loading) return;
+  if (!state.loc) { showMsg("Dein Standort wird noch ermittelt – bitte einen Moment warten."); return; }
+  showMsg("");
+  const old = button.innerHTML;
+  button.innerHTML = '<span class="ic"><span class="spinner"></span></span><span class="lb">Suche …</span>';
+  try {
+    const place = await resolveFav(getSlot(slot));
+    if (!place) { showMsg(`„${slotName(slot)}“ wurde im Verkehrsgebiet ${regionTitle(region())} nicht gefunden.`); return; }
+    setDest(place);
+    await runSearch();
+  } catch (e) { showMsg(e.message); }
+  finally { button.innerHTML = old; }
+}
+
+/** Gespeichertes Ziel; liegt es in einem anderen Verkehrsgebiet, wird es dort per Name neu gesucht */
+async function resolveFav(f) {
+  if (!f) return null;
+  if (f.place.region === region()) return f.place;
+  const res = await provider().search(f.place.name);
+  return res[0] || null;
+}
+
+function showHint(html, buttons = []) {
+  const h = $("#favHint");
+  h.innerHTML = `<span>${html}</span><span style="display:flex;gap:4px">${buttons.map((b, i) => `<button data-i="${i}">${esc(b.text)}</button>`).join("")}</span>`;
+  buttons.forEach((b, i) => h.querySelector(`[data-i="${i}"]`).addEventListener("click", b.onClick));
+  h.classList.remove("hidden");
+}
+function hideHint() { $("#favHint").classList.add("hidden"); }
+
+function startAssign(slot) {
+  state.assignSlot = slot;
+  setDest(null);
+  showHint(slot === "home"
+      ? "Gib deine Heimadresse oben im Suchfeld ein (Straße Hausnr., Ort) und tippe den passenden Treffer an."
+      : `Ziel für „${esc(slotName(slot))}“ oben im Suchfeld suchen und antippen.`,
+    [{ text: "Abbrechen", onClick: endAssign }]);
+  $("#dest").focus();
+}
+function endAssign() { state.assignSlot = null; hideHint(); }
+
+/** Wird beim Antippen eines Suchtreffers / zuletzt gesuchten Ziels aufgerufen */
+function pickPlace(p) {
+  if (state.assignSlot != null) {
+    const s = state.assignSlot, old = getSlot(s);
+    const label = s === "home" ? "Zu Hause" : (old?.label && !/^Ziel \d$/.test(old.label) ? old.label : p.name);
+    setSlot(s, { label, place: p });
+    store.set("welcomeDone", true);
+    endAssign();
+    setDest(p);
+    renderFavs();
+    showHint(`✓ „${esc(label)}“ gespeichert${s === "home" ? ": " + esc(p.name) : ""}.`);
+    setTimeout(() => { if (state.assignSlot == null) hideHint(); }, 3000);
+    return;
+  }
+  selectDest(p);
+  runSearch();
+}
+
+function openFavEdit() {
+  const box = $("#favEditSlots");
+  box.innerHTML = "";
+  for (const s of SLOTS) {
+    const f = getSlot(s), isHome = s === "home";
+    const sec = document.createElement("section");
+    sec.className = "card";
+    sec.innerHTML = `
+      ${isHome ? "<div><b>🏠 Zu Hause</b></div>" : `<label class="setting">Bezeichnung (Schnellziel ${s + 1})
+        <input type="text" maxlength="24" placeholder="z. B. Büro Berlin" value="${esc(f?.label || "")}" ${f ? "" : "disabled"}></label>`}
+      <div class="muted" style="margin-top:4px">${f ? (isHome ? "Adresse: " : "Ziel: ") + esc(f.place.name) + (f.place.detail ? " · " + esc(f.place.detail) : "") + " · " + regionTitle(f.place.region) : "Noch nicht festgelegt"}</div>
+      <div class="row" style="gap:8px;margin-top:6px">
+        <button class="secondary" data-act="set">${f ? (isHome ? "Adresse ändern" : "Ziel ändern") : (isHome ? "Adresse festlegen" : "Ziel festlegen")}</button>
+        ${f ? '<button class="secondary" data-act="clear" style="color:#d12">Entfernen</button>' : ""}
+      </div>`;
+    sec.querySelector("input")?.addEventListener("change", e => {
+      const v = e.target.value.trim();
+      if (getSlot(s) && v) { getSlot(s).label = v; setSlot(s, getSlot(s)); renderFavs(); }
+    });
+    sec.querySelector('[data-act="set"]').addEventListener("click", () => { $("#favEdit").classList.add("hidden"); startAssign(s); });
+    sec.querySelector('[data-act="clear"]')?.addEventListener("click", () => { setSlot(s, null); renderFavs(); openFavEdit(); });
+    box.appendChild(sec);
+  }
+  box.insertAdjacentHTML("beforeend", '<div class="foot">Diese Angaben werden nur auf diesem Gerät gespeichert und sind nicht Teil der App-Dateien.</div>');
+  $("#favEdit").classList.remove("hidden");
+}
+$("#favEditDone").addEventListener("click", () => $("#favEdit").classList.add("hidden"));
+
+/** Beim ersten Start: Heimadresse erfragen */
+function welcome() {
+  if (state.home || store.get("welcomeDone", false)) return;
+  showHint("👋 Willkommen! Lege einmalig deine Heimadresse fest – dann bringt dich der Button „Zu Hause“ mit einem Tipp heim.", [
+    { text: "Festlegen", onClick: () => startAssign("home") },
+    { text: "Später", onClick: () => { store.set("welcomeDone", true); hideHint(); } }
+  ]);
+}
+
+// ---------------------------------------------------------------- Start
+renderFavs();
+welcome();
+$("#regionChip").textContent = regionTitle(region());
+renderRecent();
+startLocation();
+// Abfahrtszeiten ("Losgehen in …") jede Minute aktualisieren
+setInterval(() => { if (state.journeys.length && $("#detail").classList.contains("hidden")) renderResults(); }, 60000);
+</script>
+</body>
+</html>
