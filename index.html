@@ -107,6 +107,11 @@
 <main>
   <section class="card">
     <div class="row"><span>📍</span><div><div id="locText">Standort wird ermittelt …</div><div id="locSub" class="muted"></div></div></div>
+    <div class="row" id="boardRow" style="border-top:1px solid var(--line);margin-top:4px">
+      <span>🚏</span><div style="flex:1"><div id="boardText">Einstieg: automatisch</div><div id="boardSub" class="muted"></div></div>
+      <button class="favlink" id="boardChange" style="padding:6px 2px">ändern</button>
+    </div>
+    <button class="secondary hidden" id="boardQuick" style="width:100%;margin:2px 0 6px;font-weight:600"></button>
     <div class="favs" id="favs"></div>
     <div id="favHint" class="hint hidden"></div>
     <div class="search">
@@ -130,6 +135,13 @@
 <div id="detail" class="sheet hidden">
   <div class="bar"><button id="detailBack">‹ Zurück</button><h2 id="detailTitle"></h2><span style="width:60px"></span></div>
   <div id="detailBody"></div>
+</div>
+
+<!-- Einstiegshaltestelle wählen -->
+<div id="boardSheet" class="sheet hidden">
+  <div class="bar"><span style="width:60px"></span><h2>Einstieg</h2><button id="boardSheetDone">Fertig</button></div>
+  <section class="card"><ul class="suggest" id="boardList"></ul></section>
+  <div class="foot">Bei einer festen Einstiegshaltestelle läufst du zuerst dorthin; die App sucht die Verbindungen ab dort und berücksichtigt den Fußweg. Für deine Haltestelle zu Hause erscheint in der Nähe deiner Heimadresse (bis 500 m) ein Button, mit dem du sie per Tipp wählst.</div>
 </div>
 
 <!-- Favoriten bearbeiten -->
@@ -299,10 +311,10 @@ const BVG = {
       return { id: `${lat},${lon}`, name: l.address || l.name, detail: "Adresse", lat, lon, kind: "address", region: "berlin" };
     }).filter(Boolean);
   },
-  async journeys(from, to, dep, few) {
+  async journeys(from, to, dep, few, fromStop) {
     const u = new URL(this.base + "/journeys");
     const p = {
-      "from.latitude": from.lat.toFixed(6), "from.longitude": from.lon.toFixed(6), "from.address": "Mein Standort",
+      ...(fromStop ? { from: fromStop.id } : { "from.latitude": from.lat.toFixed(6), "from.longitude": from.lon.toFixed(6), "from.address": "Mein Standort" }),
       departure: dep.toISOString(), results: 6, stopovers: true, remarks: false, language: "de", walkingSpeed: settings.speed, tickets: true
     };
     if (few) p.transfers = 1;
@@ -422,7 +434,8 @@ const VVO = {
     if (fallback) return fallback;
     throw new Error("Dein Standort konnte keinem Ort im VVO-Gebiet zugeordnet werden.");
   },
-  async journeys(from, to, dep, few) {
+  async journeys(from, to, dep, few, fromStop) {
+    if (fromStop) return this.trips(fromStop.id, to.id, dep, few, null);
     const origin = await this.originId(from.lat, from.lon);
     return this.trips(origin, to.id, dep, few, from);
   },
@@ -555,7 +568,7 @@ const J = {
 function rank(list, now) {
   const seen = new Set();
   list = list.filter(j => !j.legs.some(l => l.cancelled) && J.arr(j) > now && !seen.has(J.sig(j)) && seen.add(J.sig(j)));
-  const ok = list.filter(j => J.accessWalk(j) <= settings.maxWalk * 1.1);
+  const ok = list.filter(j => j.fixedStart || J.accessWalk(j) <= settings.maxWalk * 1.1);
   if (ok.length) list = ok;
   for (const j of list) {
     j.score = (J.arr(j) - now) / 60000 + J.transfers(j) * settings.penalty + J.totalWalk(j) / 1000 * 1.5;
@@ -582,6 +595,7 @@ function startLocation() {
     $("#locText").textContent = "Mein Standort";
     $("#locSub").textContent = "Genauigkeit ±" + Math.round(p.coords.accuracy) + " m";
     if (first || prevRegion !== region()) onRegionChange();
+    if (typeof renderBoard === "function") renderBoard();
     updateGo();
   }, err => {
     $("#locText").textContent = err.code === 1 ? "Standortzugriff verweigert" : "Standort nicht verfügbar";
@@ -664,8 +678,17 @@ async function runSearch() {
   const prov = provider(), from = { lat: state.loc.lat, lon: state.loc.lon };
   state.target = { name: state.dest.name, lat: state.dest.lat, lon: state.dest.lon, region: region() };
   // zwei Abfragen parallel: schnellste + max. 1 Umstieg
-  const res = await Promise.allSettled([prov.journeys(from, state.dest, dep, false), prov.journeys(from, state.dest, dep, true)]);
-  const all = res.flatMap(r => (r.status === "fulfilled" ? r.value : []));
+  // Gewählte Einstiegshaltestelle: erst dorthin laufen, dann ab dort suchen
+  const bs = activeBoard();
+  let depQ = dep, walk = null;
+  if (bs) {
+    const dist = Math.round(haversine(from.lat, from.lon, bs.lat, bs.lon) * WALK_DETOUR);
+    walk = { dist, min: Math.max(1, Math.ceil(dist / SPEED_MPM[settings.speed])) };
+    depQ = new Date(+dep + walk.min * 60000);
+  }
+  const res = await Promise.allSettled([prov.journeys(from, state.dest, depQ, false, bs), prov.journeys(from, state.dest, depQ, true, bs)]);
+  let all = res.flatMap(r => (r.status === "fulfilled" ? r.value : []));
+  if (bs) all = all.map(j => withAccessWalk(j, bs, walk, from));
   const err = res.find(r => r.status === "rejected")?.reason;
   state.journeys = all.length ? rank(all, new Date(Math.min(+dep, Date.now()))) : [];
   if (!state.journeys.length) $("#msg").innerHTML = `<div class="card">⚠️ ${esc(err ? err.message : "Keine passende Verbindung gefunden.")}</div>`;
@@ -1007,22 +1030,46 @@ function showHint(html, buttons = []) {
 function hideHint() { $("#favHint").classList.add("hidden"); }
 
 function startAssign(slot) {
+  const isBoard = slot === "board" || slot === "homeBoard";
+  state.assignPrevDest = isBoard ? state.dest : null;
   state.assignSlot = slot;
   setDest(null);
   showHint(slot === "home"
       ? "Gib deine Heimadresse oben im Suchfeld ein (Straße Hausnr., Ort) und tippe den passenden Treffer an."
+      : slot === "board" ? "Einstiegshaltestelle oben im Suchfeld suchen und antippen."
+      : slot === "homeBoard" ? "Deine Einstiegshaltestelle für zu Hause oben im Suchfeld suchen und antippen."
       : `Ziel für „${esc(slotName(slot))}“ oben im Suchfeld suchen und antippen.`,
     [{ text: "Abbrechen", onClick: endAssign }]);
   $("#dest").focus();
 }
-function endAssign() { state.assignSlot = null; hideHint(); }
+function endAssign() {
+  const prev = state.assignPrevDest;
+  state.assignSlot = null; state.assignPrevDest = null; hideHint();
+  if (prev) setDest(prev);
+}
 
 /** Wird beim Antippen eines Suchtreffers / zuletzt gesuchten Ziels aufgerufen */
 function pickPlace(p) {
+  const as = state.assignSlot;
+  if (as === "board" || as === "homeBoard") {
+    if (p.kind !== "stop" || p.lat == null) {
+      setDest(null);
+      showHint("Bitte eine <b>Haltestelle</b> auswählen (🚏), keine Adresse.", [{ text: "Abbrechen", onClick: endAssign }]);
+      return;
+    }
+    if (as === "homeBoard") { state.home.board = p; store.set("home", state.home); state.boardChoice = null; }
+    else { state.boardManual = p; state.boardChoice = "manual"; }
+    endAssign();
+    renderBoard();
+    showHint(`✓ Einstieg „${esc(p.name)}“ ${as === "homeBoard" ? "für zu Hause gespeichert" : "gewählt"}.`);
+    setTimeout(() => { if (state.assignSlot == null) hideHint(); }, 3000);
+    if (state.dest && state.loc) runSearch();
+    return;
+  }
   if (state.assignSlot != null) {
     const s = state.assignSlot, old = getSlot(s);
     const label = s === "home" ? "Zu Hause" : (old?.label && !/^Ziel \d$/.test(old.label) ? old.label : p.name);
-    setSlot(s, { label, place: p });
+    setSlot(s, { label, place: p, ...(s === "home" && old?.board ? { board: old.board } : {}) });
     store.set("welcomeDone", true);
     endAssign();
     setDest(p);
@@ -1049,7 +1096,13 @@ function openFavEdit() {
       <div class="row" style="gap:8px;margin-top:6px">
         <button class="secondary" data-act="set">${f ? (isHome ? "Adresse ändern" : "Ziel ändern") : (isHome ? "Adresse festlegen" : "Ziel festlegen")}</button>
         ${f ? '<button class="secondary" data-act="clear" style="color:#d12">Entfernen</button>' : ""}
-      </div>`;
+      </div>
+      ${isHome && f ? `<div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px"><b>🚏 Einstiegshaltestelle zu Hause</b>
+        <div class="muted" style="margin-top:4px">${f.board ? esc(f.board.name) + " – per Button auf dem Startbildschirm wählbar, wenn du in der Nähe deiner Heimadresse bist" : "Nicht festgelegt – die App wählt automatisch die beste Haltestelle"}</div>
+        <div class="row" style="gap:8px;margin-top:6px"><button class="secondary" data-act="board">${f.board ? "Haltestelle ändern" : "Haltestelle festlegen"}</button>
+        ${f.board ? '<button class="secondary" data-act="boardclear" style="color:#d12">Entfernen</button>' : ""}</div></div>` : ""}`;
+    sec.querySelector('[data-act="board"]')?.addEventListener("click", () => { $("#favEdit").classList.add("hidden"); startAssign("homeBoard"); });
+    sec.querySelector('[data-act="boardclear"]')?.addEventListener("click", () => { delete state.home.board; store.set("home", state.home); renderBoard(); openFavEdit(); });
     sec.querySelector("input")?.addEventListener("change", e => {
       const v = e.target.value.trim();
       if (getSlot(s) && v) { getSlot(s).label = v; setSlot(s, getSlot(s)); renderFavs(); }
@@ -1063,6 +1116,85 @@ function openFavEdit() {
 }
 $("#favEditDone").addEventListener("click", () => $("#favEdit").classList.add("hidden"));
 
+// ---------------------------------------------------------------- Einstiegshaltestelle
+const HOME_RADIUS = 500;  // m – innerhalb dieses Umkreises gilt "zu Hause"
+state.boardChoice = null;  // null/"auto" = automatisch, "home" = Haltestelle zu Hause, "manual" = selbst gewählt
+state.boardManual = null;
+
+function nearHome() {
+  const h = state.home?.place;
+  return !!(state.loc && h && h.lat != null && haversine(state.loc.lat, state.loc.lon, h.lat, h.lon) <= HOME_RADIUS);
+}
+/** Aktuell gültige Einstiegshaltestelle oder null (= automatisch) */
+function activeBoard() {
+  const hb = state.home?.board;
+  let b = null;
+  if (state.boardChoice === "manual") b = state.boardManual;
+  else if (state.boardChoice === "home") b = hb;
+  return b && b.lat != null && b.region === region() ? b : null;
+}
+/** Fußweg vom Standort zur gewählten Haltestelle vor die Verbindung setzen */
+function withAccessWalk(j, bs, walk, from) {
+  const legs = j.legs.slice();
+  while (legs.length && legs[0].walking && mins(legs[0].dep, legs[0].arr) <= 1) legs.shift();
+  if (!legs.length) return j;
+  const first = legs[0];
+  if (walk.dist >= 30) legs.unshift({ walking: true, estimated: true, product: "walk", origin: "Mein Standort", dest: bs.name,
+    dep: new Date(+first.dep - walk.min * 60000), arr: first.dep, dist: walk.dist, oLat: from.lat, oLon: from.lon, dLat: bs.lat, dLon: bs.lon });
+  return { ...j, legs, fixedStart: true };
+}
+function renderBoard() {
+  const b = activeBoard(), hb = state.home?.board, q = $("#boardQuick");
+  // Schnell-Button: zu Hause mit einem Tipp zwischen "automatisch" und der eigenen Haltestelle wechseln
+  if (hb && hb.region === region() && (nearHome() || b === hb)) {
+    q.textContent = b === hb ? "↺ Wieder automatisch einsteigen" : `🏠 Ab „${hb.name}“ einsteigen`;
+    q.classList.remove("hidden");
+  } else q.classList.add("hidden");
+  if (!b) {
+    $("#boardText").textContent = "Einstieg: automatisch";
+    $("#boardSub").textContent = "beste Haltestelle in deiner Nähe";
+    return;
+  }
+  $("#boardText").textContent = "Einstieg: " + b.name;
+  let sub = b === state.home?.board ? "deine Haltestelle zu Hause" : "selbst gewählt";
+  if (state.loc) {
+    const dist = Math.round(haversine(state.loc.lat, state.loc.lon, b.lat, b.lon) * WALK_DETOUR);
+    sub = `ca. ${dist} m · ${Math.max(1, Math.ceil(dist / SPEED_MPM[settings.speed]))} min zu Fuß · ` + sub;
+  }
+  $("#boardSub").textContent = sub;
+}
+function chooseBoard(choice) {
+  state.boardChoice = choice;
+  $("#boardSheet").classList.add("hidden");
+  renderBoard();
+  if (state.journeys.length || (state.dest && state.loc)) runSearch();
+}
+function openBoardSheet() {
+  const ul = $("#boardList");
+  ul.innerHTML = "";
+  const cur = activeBoard();
+  const item = (icon, title, sub, onClick, active) => {
+    const li = document.createElement("li");
+    li.innerHTML = `<span>${icon}</span><div style="flex:1"><div>${esc(title)}</div>${sub ? `<div class="muted">${esc(sub)}</div>` : ""}</div>${active ? '<b style="color:var(--blue)">✓</b>' : ""}`;
+    li.addEventListener("click", onClick);
+    ul.appendChild(li);
+  };
+  item("🧭", "Automatisch", "beste Haltestelle in deiner Nähe", () => chooseBoard("auto"), !cur);
+  const hb = state.home?.board;
+  if (hb) item("🏠", hb.name, "deine Haltestelle zu Hause", () => chooseBoard("home"), cur === hb);
+  if (state.boardManual && state.boardManual !== hb) item("🚏", state.boardManual.name, "zuletzt gewählt", () => chooseBoard("manual"), cur === state.boardManual);
+  item("🔍", "Andere Haltestelle suchen …", "nur für diese Fahrt", () => { $("#boardSheet").classList.add("hidden"); startAssign("board"); }, false);
+  item("🏠", hb ? "Haltestelle für zu Hause ändern …" : "Haltestelle für zu Hause festlegen …", "wird gespeichert", () => {
+    $("#boardSheet").classList.add("hidden");
+    if (!state.home) { showMsg("Bitte lege zuerst deine Heimadresse fest (Button „Zu Hause“)."); return; }
+    startAssign("homeBoard");
+  }, false);
+  $("#boardSheet").classList.remove("hidden");
+}
+$("#boardChange").addEventListener("click", openBoardSheet);
+$("#boardQuick").addEventListener("click", () => chooseBoard(activeBoard() === state.home?.board ? "auto" : "home"));
+$("#boardSheetDone").addEventListener("click", () => $("#boardSheet").classList.add("hidden"));
+
 /** Beim ersten Start: Heimadresse erfragen */
 function welcome() {
   if (state.home || store.get("welcomeDone", false)) return;
@@ -1074,6 +1206,7 @@ function welcome() {
 
 // ---------------------------------------------------------------- Start
 renderFavs();
+renderBoard();
 welcome();
 $("#regionChip").textContent = regionTitle(region());
 renderRecent();
