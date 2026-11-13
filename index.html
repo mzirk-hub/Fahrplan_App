@@ -68,6 +68,8 @@
   .leg .ic { width:28px; text-align:center; font-size:18px; }
   .t { font-variant-numeric:tabular-nums; font-weight:600; }
   .leg.tap { cursor:pointer; }
+  .minus { flex:none; width:30px; height:30px; border-radius:50%; border:1.5px solid #d12; background:transparent; color:#d12;
+    font-size:20px; line-height:1; font-weight:600; padding:0; }
   .more { font-size:13px; color:var(--blue); margin-top:3px; }
   .stops { list-style:none; margin:8px 0 2px; padding:0 0 0 2px; border-left:3px solid var(--lc, #999); }
   .stops li { position:relative; padding:4px 0 4px 14px; font-size:14px; display:flex; gap:8px; align-items:baseline; }
@@ -314,6 +316,14 @@ const BVG = {
     const r = await fetchJSON(u.toString());
     return (r.journeys || []).map(j => this.convert(j)).filter(Boolean);
   },
+  /** Verbindungen zwischen zwei Haltestellen-IDs (für die Tarifprüfung) */
+  async between(fromId, toId, dep) {
+    const u = new URL(this.base + "/journeys");
+    Object.entries({ from: fromId, to: toId, departure: dep.toISOString(), results: 4, stopovers: false, remarks: false, language: "de", tickets: true })
+      .forEach(([k, v]) => u.searchParams.set(k, v));
+    const r = await fetchJSON(u.toString());
+    return (r.journeys || []).map(j => this.convert(j)).filter(Boolean);
+  },
   convert(j) {
     const prod = { suburban: "sbahn", subway: "ubahn", tram: "tram", bus: "bus", ferry: "ferry", regional: "regional", express: "express" };
     const coord = o => [o?.latitude ?? o?.location?.latitude, o?.longitude ?? o?.location?.longitude];
@@ -328,13 +338,16 @@ const BVG = {
         dep, arr, depDelay: l.departureDelay != null ? Math.round(l.departureDelay / 60) : null,
         arrDelay: l.arrivalDelay != null ? Math.round(l.arrivalDelay / 60) : null,
         platform: l.departurePlatform, dist: l.distance ?? null, oLat, oLon, dLat, dLon, cancelled: !!l.cancelled,
+        originId: l.origin?.type === "stop" || l.origin?.type === "station" ? l.origin.id : null,
+        destId: l.destination?.type === "stop" || l.destination?.type === "station" ? l.destination.id : null,
         stops: (l.stopovers || []).map((so, k, all) => {
           const last = k === all.length - 1;
           const t = last ? (so.arrival || so.plannedArrival || so.departure || so.plannedDeparture)
                          : (so.departure || so.plannedDeparture || so.arrival || so.plannedArrival);
           const d = last ? (so.arrivalDelay ?? so.departureDelay) : (so.departureDelay ?? so.arrivalDelay);
           return { name: so.stop?.name || "?", time: t ? new Date(t) : null, delay: d != null ? Math.round(d / 60) : null,
-                   platform: so.departurePlatform || so.arrivalPlatform || null, cancelled: !!so.cancelled };
+                   platform: so.departurePlatform || so.arrivalPlatform || null, cancelled: !!so.cancelled,
+                   id: so.stop?.id || null, lat: so.stop?.location?.latitude ?? null, lon: so.stop?.location?.longitude ?? null };
         })
       };
     }).filter(Boolean);
@@ -411,9 +424,14 @@ const VVO = {
   },
   async journeys(from, to, dep, few) {
     const origin = await this.originId(from.lat, from.lon);
+    return this.trips(origin, to.id, dep, few, from);
+  },
+  /** Verbindungen zwischen zwei Haltestellen-IDs (für die Tarifprüfung) */
+  async between(fromId, toId, dep) { return this.trips(fromId, toId, dep, false, null); },
+  async trips(origin, destination, dep, few, from) {
     const walkMin = Math.max(5, Math.ceil(settings.maxWalk / SPEED_MPM[settings.speed]));
     const body = {
-      origin, destination: to.id, time: dep.toISOString(), isarrivaltime: false, shorttermchanges: true,
+      origin, destination, time: dep.toISOString(), isarrivaltime: false, shorttermchanges: true,
       standardSettings: {
         mot: ["Tram", "CityBus", "IntercityBus", "SuburbanRailway", "Train", "Cableway", "Ferry", "HailedSharedTaxi"],
         maxChanges: few ? "One" : "Unlimited",
@@ -459,12 +477,15 @@ const VVO = {
         origin: f?.Name, dest: l?.Name, dep: rd || pd, arr: ra || pa,
         depDelay: pd && rd ? mins(pd, rd) : null, arrDelay: pa && ra ? mins(pa, ra) : null,
         platform: f?.Platform?.Name, dur: pr.Duration || 0, dist: null,
+        originId: walking ? null : f?.DataId || null, destId: walking ? null : l?.DataId || null,
         stops: walking ? [] : stops.map((st, k) => {
           const first = k === 0;
           const plan = this.parseDate(first ? (st.DepartureTime || st.ArrivalTime) : (st.ArrivalTime || st.DepartureTime));
           const real = this.parseDate(first ? (st.DepartureRealTime || st.ArrivalRealTime) : (st.ArrivalRealTime || st.DepartureRealTime));
+          const [sLat, sLon] = num(st.Latitude) > 1000 ? GK.toWGS(num(st.Longitude), num(st.Latitude)) : [null, null];
           return { name: st.Name || "?", time: real || plan, delay: plan && real ? mins(plan, real) : null,
-                   platform: st.Platform?.Name || null, cancelled: st.State === "Cancelled" };
+                   platform: st.Platform?.Name || null, cancelled: st.State === "Cancelled",
+                   id: st.DataId || null, lat: sLat, lon: sLon };
         })
       };
       if (num(f?.Latitude) > 1000) [x.oLat, x.oLon] = GK.toWGS(num(f.Longitude), num(f.Latitude));
@@ -482,7 +503,7 @@ const VVO = {
     d.forEach((x, i) => {
       if (!x.origin) x.origin = i === 0 ? "Mein Standort" : d[i - 1].dest;
       if (!x.dest) x.dest = d[i + 1]?.origin || "Ziel";
-      if (x.oLat == null) { if (i === 0) { x.oLat = from.lat; x.oLon = from.lon; } else { x.oLat = d[i - 1].dLat; x.oLon = d[i - 1].dLon; } }
+      if (x.oLat == null) { if (i === 0) { if (from) { x.oLat = from.lat; x.oLon = from.lon; } } else { x.oLat = d[i - 1].dLat; x.oLon = d[i - 1].dLon; } }
     });
     const legs = d.filter(x => x.dep && x.arr);
     if (!legs.length) return null;
@@ -641,6 +662,7 @@ async function runSearch() {
   $("#go").innerHTML = '<span class="spinner"></span> Suche …';
   $("#msg").innerHTML = "";
   const prov = provider(), from = { lat: state.loc.lat, lon: state.loc.lon };
+  state.target = { name: state.dest.name, lat: state.dest.lat, lon: state.dest.lon, region: region() };
   // zwei Abfragen parallel: schnellste + max. 1 Umstieg
   const res = await Promise.allSettled([prov.journeys(from, state.dest, dep, false), prov.journeys(from, state.dest, dep, true)]);
   const all = res.flatMap(r => (r.status === "fulfilled" ? r.value : []));
@@ -698,7 +720,99 @@ function renderRecent() {
 // ---------------------------------------------------------------- Detailansicht
 let map = null;
 function openDetail(i) {
-  const j = state.journeys[i], board = J.transit(j)[0];
+  state.detail = { orig: state.journeys[i], cur: state.journeys[i], options: null, chosen: null, removedFrom: null, fareCheck: null };
+  renderDetail(true);
+}
+
+// ---------- Teilfahrt streichen und stattdessen früher aussteigen + laufen
+const WALK_DETOUR = 1.3;   // Fußwege sind ca. 30 % länger als die Luftlinie
+function haversine(a, b, c, d) {
+  const r = Math.PI / 180, x = Math.sin((c - a) * r / 2) ** 2 + Math.cos(a * r) * Math.cos(c * r) * Math.sin((d - b) * r / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(x));
+}
+/** Ziel-Koordinaten: gesuchtes Ziel, sonst Ende der Originalverbindung */
+function targetOf(j) {
+  const t = state.target, last = j.legs[j.legs.length - 1];
+  if (t && t.lat != null) return t;
+  return last.dLat != null ? { name: last.dest, lat: last.dLat, lon: last.dLon } : null;
+}
+/** Mögliche Ausstiege auf der Fahrt vor Teilfahrt `legIdx` – sortiert nach Ankunft am Ziel */
+function exitOptions(j, legIdx) {
+  let p = legIdx - 1; while (p >= 0 && j.legs[p].walking) p--;
+  const target = targetOf(j);
+  if (p < 0 || !target) return { p, list: [] };
+  const leg = j.legs[p];
+  const list = (leg.stops || []).map((s, k) => ({ s, k })).filter(({ s, k }) => k > 0 && s.time && s.lat != null && !s.cancelled)
+    .map(({ s, k }) => {
+      const dist = Math.round(haversine(s.lat, s.lon, target.lat, target.lon) * WALK_DETOUR);
+      const walkMin = Math.max(1, Math.ceil(dist / SPEED_MPM[settings.speed]));
+      return { k, stop: s, dist, walkMin, arrival: new Date(+s.time + walkMin * 60000) };
+    })
+    .sort((a, b) => a.arrival - b.arrival || a.dist - b.dist);
+  return { p, list };
+}
+function buildShortened(j, p, opt) {
+  const target = targetOf(j);
+  const leg = { ...j.legs[p] };
+  leg.stops = leg.stops.slice(0, opt.k + 1);
+  Object.assign(leg, { dest: opt.stop.name, arr: opt.stop.time, arrDelay: opt.stop.delay, dLat: opt.stop.lat, dLon: opt.stop.lon, destId: opt.stop.id });
+  const walk = { walking: true, product: "walk", estimated: true, origin: opt.stop.name, dest: target.name || "Ziel",
+    dep: opt.stop.time, arr: opt.arrival, dist: opt.dist, oLat: opt.stop.lat, oLon: opt.stop.lon, dLat: target.lat, dLon: target.lon };
+  return { legs: [...j.legs.slice(0, p), leg, walk], price: null, fare: null, modified: true };
+}
+function removeLeg(legIdx) {
+  const d = state.detail, base = d.cur;
+  const { p, list } = exitOptions(base, legIdx);
+  if (!list.length) { alertInDetail("Für diese Fahrt liegen keine Zwischenhalte mit Koordinaten vor – der Fußweg kann nicht berechnet werden."); return; }
+  d.base = base; d.basePrev = p; d.options = list;
+  applyOption(0);
+}
+function applyOption(n) {
+  const d = state.detail;
+  d.chosen = n;
+  d.cur = buildShortened(d.base, d.basePrev, d.options[n]);
+  d.fareCheck = { status: "pending" };
+  renderDetail(false);
+  recheckFare(d.cur);
+}
+function restoreOriginal() {
+  Object.assign(state.detail, { cur: state.detail.orig, options: null, chosen: null, base: null, fareCheck: null });
+  renderDetail(false);
+}
+function alertInDetail(text) {
+  const el = $("#detailAlert");
+  if (el) { el.textContent = "⚠️ " + text; el.classList.remove("hidden"); }
+}
+/** Tarif der verkürzten Fahrt neu abfragen (Einstieg erste Fahrt → neuer Ausstieg) */
+async function recheckFare(mod) {
+  const ts = J.transit(mod), first = ts[0], last = ts[ts.length - 1];
+  const prov = (state.target?.region || region()) === "berlin" ? BVG : VVO;
+  try {
+    if (!first?.originId || !last?.destId) throw new Error("Haltestellen-ID fehlt");
+    const res = await prov.between(first.originId, last.destId, new Date(+first.dep - 60000));
+    const sig = ts.map(l => l.line).join("+");
+    const pick = res.find(r => J.transit(r).map(l => l.line).join("+") === sig) || res[0];
+    if (!pick || (!pick.price && !pick.fare?.zones)) throw new Error("keine Tarifangabe");
+    mod.price = pick.price; mod.fare = pick.fare;
+    if (state.detail.cur === mod) { state.detail.fareCheck = { status: "done" }; renderDetail(false); }
+  } catch (e) {
+    if (state.detail.cur === mod) { state.detail.fareCheck = { status: "error" }; renderDetail(false); }
+  }
+}
+function fareCompareHtml() {
+  const d = state.detail, o = d.orig, n = d.cur, fc = d.fareCheck;
+  if (!fc) return "";
+  if (fc.status === "pending") return `<div class="row muted"><span class="spinner"></span> Tarif wird geprüft …</div>`;
+  if (fc.status === "error") return `<div class="muted">Der Tarif für die geänderte Fahrt konnte nicht abgefragt werden – vermutlich gilt derselbe Fahrschein wie bisher.</div>`;
+  const label = j => [fareShort(j) || j.fare?.zones, j.price].filter(Boolean).join(" · ") || "unbekannt";
+  const po = parseEuro(o.price), pn = parseEuro(n.price);
+  if (label(o) === label(n)) return `<div class="row" style="color:var(--green)">✓ Tarif unverändert: ${esc(label(n))}</div>`;
+  const cheaper = po != null && pn != null && pn < po, dearer = po != null && pn != null && pn > po;
+  return `<div class="row" style="color:${cheaper ? "var(--green)" : dearer ? "#d12" : "inherit"};flex-wrap:wrap">${cheaper ? "💶 Günstiger" : dearer ? "Teurer" : "Tarif ändert sich"}: ${esc(label(o))} → <b>${esc(label(n))}</b></div>`;
+}
+
+function renderDetail(scrollTop) {
+  const j = state.detail.cur, board = J.transit(j)[0];
   $("#detailTitle").textContent = `${hhmm(J.dep(j))} → ${hhmm(J.arr(j))}`;
   let html = "";
   if (board && board.oLat != null) {
@@ -708,25 +822,46 @@ function openDetail(i) {
       <a class="nav" href="https://maps.apple.com/?daddr=${board.oLat},${board.oLon}&dirflg=w">🧭 Zur Haltestelle „${esc(board.origin)}“ navigieren</a>
     </section>`;
   }
+  const d = state.detail;
+  html += `<div id="detailAlert" class="card hidden" style="color:#b35c00"></div>`;
+  if (j.modified) {
+    const o = d.orig, opt = d.options[d.chosen], diff = mins(J.arr(o), J.arr(j));
+    html += `<section class="card" style="border:2px solid var(--blue)">
+      <div><b>Geänderte Verbindung</b> – Ausstieg an „${esc(opt.stop.name)}“, dann ca. ${opt.dist} m (${opt.walkMin} min) zu Fuß.</div>
+      <div class="muted" style="margin:4px 0">Ankunft ca. ${hhmm(J.arr(j))} · ${diff === 0 ? "gleich schnell wie" : Math.abs(diff) + " min " + (diff < 0 ? "früher als" : "später als")} die ursprüngliche Verbindung (${hhmm(J.arr(o))}).</div>
+      ${fareCompareHtml()}
+      ${d.options.length > 1 ? `<div class="muted" style="margin-top:8px">Andere Ausstiege:</div><div class="chain">${d.options.slice(0, 5).map((x, n) => n === d.chosen ? "" :
+          `<button class="secondary" data-opt="${n}" style="font-size:13px;padding:6px 9px">${esc(x.stop.name)} · ${x.dist} m · an ${hhmm(x.arrival)}</button>`).join("")}</div>` : ""}
+      <button class="secondary" id="restore" style="margin-top:8px">↺ Ursprüngliche Verbindung</button>
+    </section>`;
+  }
   html += `<div class="sectiontitle">Ablauf</div><section class="card">`;
-  for (const l of j.legs) {
+  const firstTransit = j.legs.findIndex(x => !x.walking);
+  j.legs.forEach((l, li) => {
     const p = PRODUCTS[l.product] || PRODUCTS.other;
     if (l.walking) {
-      const m = mins(l.dep, l.arr); if (m <= 0 && !l.dist) continue;
-      html += `<div class="leg"><div class="ic">🚶</div><div><b>Fußweg ${m} min${l.dist ? " · " + l.dist + " m" : ""}</b><div class="muted">bis ${esc(l.dest)}</div></div></div>`;
+      const m = mins(l.dep, l.arr); if (m <= 0 && !l.dist) return;
+      const isLast = li === j.legs.length - 1 && li > 0;
+      const nav = isLast && l.oLat != null && l.dLat != null
+        ? `<a class="more" style="display:inline-block;text-decoration:none" href="https://maps.apple.com/?saddr=${l.oLat},${l.oLon}&daddr=${l.dLat},${l.dLon}&dirflg=w">🧭 Fußweg in Karten anzeigen</a>` : "";
+      html += `<div class="leg"><div class="ic">🚶</div><div><b>Fußweg ${l.estimated ? "ca. " : ""}${m} min${l.dist ? " · " + (l.estimated ? "ca. " : "") + l.dist + " m" : ""}</b><div class="muted">bis ${esc(l.dest)}</div>${nav}</div></div>`;
     } else {
       const dl = (d) => d ? `<span class="${d > 0 ? "late" : "early"}">${d > 0 ? "+" : ""}${d}</span>` : "";
       const st = (l.stops || []).filter(x => x.time);
       const between = Math.max(0, st.length - 2);
       const stopList = st.length > 2 ? `<ul class="stops hidden" style="--lc:${p.color}">${st.map((x, k) =>
           `<li class="${k === 0 || k === st.length - 1 ? "end" : ""}${x.cancelled ? " cx" : ""}"><span class="t">${hhmm(x.time)}</span>${dl(x.delay)}<span>${esc(x.name)}${x.platform ? ` <span class="muted">· ${esc(x.platform)}</span>` : ""}</span></li>`).join("")}</ul>` : "";
+      const canRemove = li > firstTransit;
       html += `<div class="leg${stopList ? " tap" : ""}"><div class="ic" style="color:${p.color}">${p.icon}</div><div style="flex:1">
-        <div>${lineChip(l)} ${l.dir ? `<span class="muted">→ ${esc(l.dir)}</span>` : ""}</div>
+        <div style="display:flex;align-items:center;gap:6px"><span style="flex:1">${lineChip(l)} ${l.dir ? `<span class="muted">→ ${esc(l.dir)}</span>` : ""}</span>
+          ${canRemove ? `<button class="minus" data-leg="${li}" title="Diese Fahrt streichen und stattdessen laufen">−</button>` : ""}</div>
         <div><span class="t">${hhmm(l.dep)}</span>${dl(l.depDelay)} ${esc(l.origin)}${l.platform ? ` <span class="muted">· Steig ${esc(l.platform)}</span>` : ""}</div>
         <div><span class="t">${hhmm(l.arr)}</span>${dl(l.arrDelay)} ${esc(l.dest)}</div>
         ${stopList ? `<div class="more" data-n="${between}">▸ ${between} Zwischenhalt${between === 1 ? "" : "e"} anzeigen</div>${stopList}` : ""}</div></div>`;
     }
-  }
+  });
+  if (j.legs.some((x, li) => !x.walking && li > firstTransit))
+    html += `<div class="muted" style="margin-top:6px">Tipp: Mit − streichst du eine Fahrt. Die App sucht dann den besten Halt zum Aussteigen auf der Fahrt davor und berechnet den Fußweg zum Ziel.</div>`;
   html += `</section><section class="card">
     <div class="row" style="justify-content:space-between"><span>Dauer</span><b>${mins(J.dep(j), J.arr(j))} min</b></div>
     <div class="row" style="justify-content:space-between"><span>Umstiege</span><b>${J.transfers(j)}</b></div>
@@ -753,8 +888,11 @@ function openDetail(i) {
     const open = list.classList.toggle("hidden") === false;
     more.textContent = open ? "▾ Zwischenhalte ausblenden" : `▸ ${n} Zwischenhalt${n === 1 ? "" : "e"} anzeigen`;
   }));
+  document.querySelectorAll("#detailBody .minus").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); removeLeg(+b.dataset.leg); }));
+  document.querySelectorAll("#detailBody [data-opt]").forEach(b => b.addEventListener("click", () => applyOption(+b.dataset.opt)));
+  $("#restore")?.addEventListener("click", restoreOriginal);
   $("#detail").classList.remove("hidden");
-  $("#detail").scrollTop = 0;
+  if (scrollTop) $("#detail").scrollTop = 0;
 
   if (board && board.oLat != null && window.L) {
     if (map) { map.remove(); map = null; }
